@@ -24,24 +24,24 @@ namespace ft
 
 struct fd_data
 {
-    in_addr_t           _ip;
-    u_short               _port;
-    int                 _status;
-    Server*             _server;
-    Location            *_location;
-    std::fstream        _iff;
-    int                 _len_body;
-	std::string              _filename;
-	std::string              _resp;
-	std::string              _url;
-	std::string              _request_type;
-	std::string              _http11;
-	std::map<std::string, std::string> _request_head_map;
-    int                 _code_resp;
+    in_addr_t           ip_;
+    u_short               port_;
+    int                 status_;
+    Server*             server_;
+    Location            *location_;
+    std::fstream        iff_;
+    int                 bodyLength_;
+	std::string              filename_;
+	std::string              response_;
+	std::string              url_;
+	std::string              requestType_;
+	std::string              http11_;
+	std::map<std::string, std::string> requestHeadMap_;
+    int                 responseCode_;
     int                 fd;
 	std::ofstream            _outdata;
 	std::string              _error_page;
-	std::string				_autoIndex;
+	std::string				autoIndex_;
     int                 _wasreaded;
     bool                _is_chunked;
     int                 _chunk_ostatok;
@@ -55,45 +55,51 @@ struct fd_data
 
 };
 
-enum SessionStatus
-{ Nosession, Readbody, Send, Sendbody, Cgi, Closefd, AutoIndex};
+enum SessionStatus {
+    WithoutSession,
+    ReadBody,
+    Send,
+    SendBody,
+    Cgi,
+    ClosedFd,
+    AutoIndex
+};
 
 class Responder
 {
     public:
          Responder(std::vector<Server> & vec);
 
-		void        action(int fd);
-        void        make_session(int fd);
-        void        close_session(int fd);
-        void        read_post_body(int fd);
-        void        send_resp(int fd);
-        void        send_resp_body(int fd);
-        fd_set&     getMaster();
-        fd_set&     getWriteMaster();
-        bool        is_ready_to_send(int fd);
-        bool        is_ready_to_read_body(int fd);
-        void        add_to_map(const int& fd, const u_short& port, const in_addr_t& host);
-        bool        is_to_del(int fd);
-        void        del_from_map(int fd);
-        void        parse_request(fd_data &fd_dat);
-        void        find_server(fd_data &fd_dat);
-        void        cgi_handler(int fd);
-		bool		s_dir(const char *path);
+        void closeSession(int fd);
+        void createSession(int fd);
+		void action(int fd);
+        void sendResponseBody(int fd);
+        fd_set& getWriteMaster();
+        void readPostBody(int fd);
+        fd_set& getMaster();
+        void addToMap(const int& fd, const u_short& port, const in_addr_t& host);
+        void sendResponse(int fd);
+        bool isReadyToSend(int fd);
+        void cgiHandler(int fd);
+        void parseRequest(fd_data &fd_dat);
+        bool isToDelete(int fd);
+		static bool sDir(const char *path);
+        void findServer(fd_data &fd_dat);
+        void deleteFromMap(int fd);
+		void createAutoIndex(fd_data &fd_dat);
 
-		std::string errorInsertion (std::string key, std::string value, std::string str);
 		std::string makeErrorPage (int errorCode);
-		void        make_Autoindex(fd_data &fd_dat);
+		std::string errorInsertion (std::string key, std::string value, std::string str);
 
     private:
-	std::map<int, fd_data>                       _fd_host_map;
-        char                                    _buff[BUFFER];
-	std::vector<Server>&                         _servers;
-        fd_set                                  _master;
-        fd_set                                 writeMaster;
-        ft::ValidConfigKeys                   _valid_conf;
+        std::map<int, fd_data> fdHostMap_;
+        std::vector<Server>& servers_;
+        ft::ValidConfigKeys validConfig_;
+        fd_set master_;
+        fd_set writeMaster_;
+        char buff_[BUFFER];
  };
 }
 
-std::string int_to_string(int a);
+std::string intToString(int a);
 int	hexToInt(std::string str);

@@ -1,28 +1,24 @@
-//
-// Created by Janelle Kassandra on 3/13/22.
-//
-
 #include "ALocation.hpp"
 
 ft::ALocation::ALocation() {
-    _root = "";
-    _index = "";
-	_uploadPath = "";
-    _isGet = false;
-    _isPost = false;
-    _isDelete = false;
-	_autoIndex = false;
+    index_ = "";
+    root_ = "";
+    autoIndex_ = false;
+    uploadPath_ = "";
+    isDelete_ = false;
+    isPost_ = false;
+    isGet_ = false;
 }
 
 ft::ALocation &ft::ALocation::operator=(const ft::ALocation &other) {
-    _root = other._root;
-    _index = other._index;
-	_uploadPath = other._uploadPath;
-    _isGet = other._isGet;
-    _isPost = other._isPost;
-    _isDelete = other._isDelete;
-	_autoIndex = other._autoIndex;
-	_errorPages = other._errorPages;
+    root_ = other.root_;
+    index_ = other.index_;
+    uploadPath_ = other.uploadPath_;
+    isGet_ = other.isGet_;
+    isPost_ = other.isPost_;
+    isDelete_ = other.isDelete_;
+    autoIndex_ = other.autoIndex_;
+    errorPages_ = other.errorPages_;
     return *this;
 }
 
@@ -31,65 +27,65 @@ ft::ALocation::~ALocation() {
 }
 
 void ft::ALocation::setRoot(const std::string &root) {
-    _root = root;
+    root_ = root;
 }
 
 const std::string &ft::ALocation::getRoot() const {
-    return _root;
+    return root_;
 }
 
 void ft::ALocation::setIndex(const std::string &index) {
-    _index = index;
+    index_ = index;
 }
 
 const std::string &ft::ALocation::getIndex() const {
-    return _index;
+    return index_;
 }
 
 void ft::ALocation::setUploadPath(const std::string &path) {
-	_uploadPath = path;
+    uploadPath_ = path;
 }
 
 const std::string &ft::ALocation::getUploadPath() const {
-	return _uploadPath;
+	return uploadPath_;
 }
 
 void ft::ALocation::setIsGet(const bool &status) {
-    _isGet = status;
+    isGet_ = status;
 }
 
 const bool &ft::ALocation::getIsGet() const {
-    return _isGet;
+    return isGet_;
 }
 
 void ft::ALocation::setIsPost(const bool &status) {
-    _isPost = status;
+    isPost_ = status;
 }
 
 const bool &ft::ALocation::getIsPost() const {
-    return _isPost;
+    return isPost_;
 }
 
 void ft::ALocation::setIsDelete(const bool &status) {
-    _isDelete = status;
+    isDelete_ = status;
 }
 
 const bool &ft::ALocation::getIsDelete() const {
-    return _isDelete;
+    return isDelete_;
 }
 
 void ft::ALocation::setAutoIndex(const bool &autoIndex) {
-	_autoIndex = autoIndex;
+    autoIndex_ = autoIndex;
 }
 
 const bool &ft::ALocation::getAutoIndex() const {
-	return _autoIndex;
+	return autoIndex_;
 }
 
 void ft::ALocation::setErrorPages(const int& code, const std::string& path) {
-	_errorPages[code] = path;
+    errorPages_[code] = path;
 }
 
 std::map<int, std::string> &ft::ALocation::getErrorPages() {
-	return _errorPages;
+	return errorPages_;
 }

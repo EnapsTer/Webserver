@@ -10,17 +10,14 @@
 #include <ctime>
 #include <signal.h>
 
-void        ft::Responder::cgi_handler(int fd) {
-
-    /***    parse query string  ***/
-
-    fd_data &fd_dat = _fd_host_map[fd];
+void        ft::Responder::cgiHandler(int fd) {
+    fd_data &fd_dat = fdHostMap_[fd];
 
     if (not fd_dat._wait_from_cgi) {
 
         char c;
-        std::string rootPath = "www/" + fd_dat._server->getRoot();
-        std::stringstream ss(fd_dat._url);
+        std::string rootPath = "www/" + fd_dat.server_->getRoot();
+        std::stringstream ss(fd_dat.url_);
 
         std::string pathScript = rootPath;
         while (ss.peek() != '.' and ss >> c) {
@@ -28,7 +25,7 @@ void        ft::Responder::cgi_handler(int fd) {
         }
 
         if (ss.eof()) {
-            fd_dat._status = Send;
+            fd_dat.status_ = Send;
             return;
         }
 
@@ -37,7 +34,7 @@ void        ft::Responder::cgi_handler(int fd) {
             extension += c;
         }
         if (extension != ".py" and extension != ".sh") {
-            fd_dat._status = Send;
+            fd_dat.status_ = Send;
             return;
         }
         pathScript += extension;
@@ -61,36 +58,34 @@ void        ft::Responder::cgi_handler(int fd) {
             queryString += c;
         }
 
-        /***    prepare execve data ***/
-
         char *cmd[3];
         for (int i = 0; i < 3; ++i) {
             cmd[i] = NULL;
         }
         if (extension == ".py") {
-            cmd[0] = strdup(fd_dat._location->getBinPathPy().c_str());
+            cmd[0] = strdup(fd_dat.location_->getPathToBinPy().c_str());
         } else {
-            cmd[0] = strdup(fd_dat._location->getBinPathSh().c_str());
+            cmd[0] = strdup(fd_dat.location_->getPathToBinSh().c_str());
         }
         cmd[1] = strdup(pathScript.c_str());
 
         if (cmd[0] == NULL or cmd[1] == NULL) {
             free(cmd[0]);
             free(cmd[1]);
-            fd_dat._code_resp = 500;
-            send_resp(fd);
+            fd_dat.responseCode_ = 500;
+            sendResponse(fd);
             return;
         }
 
-        size_t envLen = fd_dat._request_head_map.size();
+        size_t envLen = fd_dat.requestHeadMap_.size();
         char *env[envLen + 4];
         for (size_t i = 0; i < envLen + 4; ++i) {
             env[i] = NULL;
         }
         std::string key;
         int j = 0;
-        for (std::map<std::string, std::string>::iterator it = fd_dat._request_head_map.begin();
-             it != fd_dat._request_head_map.end(); ++it) {
+        for (std::map<std::string, std::string>::iterator it = fd_dat.requestHeadMap_.begin();
+             it != fd_dat.requestHeadMap_.end(); ++it) {
             key = it->first;
             for (size_t i = 0; i < key.size(); ++i) {
                 if (key[i] == '-') {
@@ -118,16 +113,16 @@ void        ft::Responder::cgi_handler(int fd) {
                 for (int k = 0; k < i; ++k) {
                     free(env[k]);
                 }
-                fd_dat._code_resp = 500;
-                send_resp(fd);
+                fd_dat.responseCode_ = 500;
+                sendResponse(fd);
                 return;
             }
         }
 
-        fd_dat._outName = rootPath + "/outCgi" + int_to_string(fd_dat.fd);
+        fd_dat._outName = rootPath + "/outCgi" + intToString(fd_dat.fd);
 
-        if (fd_dat._request_type == "POST") {
-            fd_dat._inName = rootPath + "/inCgi" + int_to_string(fd_dat.fd);
+        if (fd_dat.requestType_ == "POST") {
+            fd_dat._inName = rootPath + "/inCgi" + intToString(fd_dat.fd);
         }
 
         /***    child process   ***/
@@ -141,8 +136,8 @@ void        ft::Responder::cgi_handler(int fd) {
             for (int i = 0; i < j; ++i) {
                 free(env[i]);
             }
-            fd_dat._code_resp = 500;
-            send_resp(fd);
+            fd_dat.responseCode_ = 500;
+            sendResponse(fd);
             return;
         }
 
@@ -156,7 +151,7 @@ void        ft::Responder::cgi_handler(int fd) {
                 perror("dup2");
                 exit(EXIT_FAILURE);
             }
-             if (fd_dat._request_type == "POST") {
+             if (fd_dat.requestType_ == "POST") {
                  int inCgiFd = open(fd_dat._inName.c_str(), O_RDONLY, 0);
                  if (inCgiFd < 0) {
                      perror("open IN");
@@ -192,35 +187,35 @@ void        ft::Responder::cgi_handler(int fd) {
         if (std::difftime(cur_time, fd_dat._time) > 30) {
             kill(fd_dat._pid, SIGKILL);
             fd_dat._wait_from_cgi = false;
-            fd_dat._code_resp = 500;
+            fd_dat.responseCode_ = 500;
             unlink(fd_dat._outName.c_str());
-            if (fd_dat._request_type == "POST") {
+            if (fd_dat.requestType_ == "POST") {
                 unlink(fd_dat._inName.c_str());
             }
-            send_resp(fd);
+            sendResponse(fd);
             return;
         }
         return;
     }
 
-    if (fd_dat._request_type == "POST") {
+    if (fd_dat.requestType_ == "POST") {
         unlink(fd_dat._inName.c_str());
     }
     fd_dat._wait_from_cgi = false;
 
     if (not WIFEXITED(status) or WEXITSTATUS(status) != EXIT_SUCCESS) {
         std::cout << "Exit status error" << std::endl;
-        fd_dat._code_resp = 500;
+        fd_dat.responseCode_ = 500;
         unlink(fd_dat._outName.c_str());
-        send_resp(fd);
+        sendResponse(fd);
         return;
     }
 
     std::ifstream output(fd_dat._outName);
     if (not output.good()) {
-        fd_dat._code_resp = 500;
+        fd_dat.responseCode_ = 500;
         unlink(fd_dat._outName.c_str());
-        send_resp(fd);
+        sendResponse(fd);
         return;
     }
     output.seekg(0, output.end);
@@ -232,7 +227,7 @@ void        ft::Responder::cgi_handler(int fd) {
     output.close();
     unlink(fd_dat._outName.c_str());
 
-    fd_dat._resp += "200 OK\n";
+    fd_dat.response_ += "200 OK\n";
     std::string tmp(buff);
     std::size_t body_size = tmp.find("\n\n");
 
@@ -243,27 +238,27 @@ void        ft::Responder::cgi_handler(int fd) {
     }
 
     if (body_size != 0) {
-        fd_dat._resp += "Content-Length: ";
-        fd_dat._resp += int_to_string(body_size);
-        fd_dat._resp += "\n";
+        fd_dat.response_ += "Content-Length: ";
+        fd_dat.response_ += intToString(body_size);
+        fd_dat.response_ += "\n";
     }
 
-    fd_dat._resp += tmp;
-    if (send(fd, fd_dat._resp.c_str(), fd_dat._resp.size(), 0) < 0) {
-        FD_CLR(fd, &writeMaster);
-        FD_CLR(fd, &_master);
+    fd_dat.response_ += tmp;
+    if (send(fd, fd_dat.response_.c_str(), fd_dat.response_.size(), 0) < 0) {
+        FD_CLR(fd, &writeMaster_);
+        FD_CLR(fd, &master_);
         close(fd);
-        fd_dat._status = Closefd;
+        fd_dat.status_ = ClosedFd;
         return;
     }
-    FD_CLR(fd, &writeMaster);
-    fd_dat._len_body = 0;
+    FD_CLR(fd, &writeMaster_);
+    fd_dat.bodyLength_ = 0;
 
-    if (fd_dat._request_head_map["Connection:"] == "close") {
-        FD_CLR(fd, &_master);
+    if (fd_dat.requestHeadMap_["Connection:"] == "close") {
+        FD_CLR(fd, &master_);
         close(fd);
-        fd_dat._status = Closefd;
+        fd_dat.status_ = ClosedFd;
         return;
     }
-    fd_dat._status = Nosession;
+    fd_dat.status_ = WithoutSession;
 }

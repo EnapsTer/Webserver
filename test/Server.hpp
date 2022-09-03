@@ -1,15 +1,11 @@
-//
-// Created by Janelle Kassandra on 3/7/22.
-//
+#ifndef SERVER_HPP
+#define SERVER_HPP
 
-#ifndef VOVA_SERVER_HPP
-#define VOVA_SERVER_HPP
-
-#include <iostream>
-#include <vector>
-#include <arpa/inet.h>
 #include "Location.hpp"
 #include "ALocation.hpp"
+#include <iostream>
+#include <arpa/inet.h>
+#include <vector>
 
 namespace ft {
 
@@ -17,33 +13,30 @@ class Server : public ft::ALocation {
 
     private:
 
-        u_short _port;
-        in_addr_t _host;
-        std::string _serverName;
-        int _maxBodySize;
-//        bool _autoIndex;
-        std::vector<Location> _locations;
+        std::string serverName_;
+        in_addr_t host_;
+        u_short port_;
+        int maxBodySize_;
+        std::vector<Location> locations_;
 
     public:
 
         Server();
         Server &operator=(const Server &other);
+
         virtual ~Server();
 
-        void setPort(const int &port);
-        const u_short &getPort() const;
-
-        void setHost(const std::string &host);
-        const in_addr_t &getHost() const;
-
-        void setServerName(const std::string &serverName);
         const std::string &getServerName() const;
+        void setServerName(const std::string &serverName);
 
-        void setMaxBodySize(const int &maxBodySize);
+        const in_addr_t &getHost() const;
+        void setHost(const std::string &host);
+
+        const u_short &getPort() const;
+        void setPort(const int &port);
+
         const int &getMaxBodySize() const;
-
-//        void setAutoIndex(const bool &autoIndex);
-//        const bool &getAutoIndex() const;
+        void setMaxBodySize(const int &maxBodySize);
 
         std::vector<Location> &getLocations();
 
@@ -51,4 +44,4 @@ class Server : public ft::ALocation {
 
 }
 
-#endif //VOVA_SERVER_HPP
+#endif

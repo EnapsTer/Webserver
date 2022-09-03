@@ -8,15 +8,14 @@
 
 namespace ft {
 	struct ValidConfigKeys {
-		std::vector<std::string>			servParams;
-		std::vector<std::string>			locParams;
-		std::map<std::string, int>			servKeys;
-		std::map<std::string, std::string>	errorsMap;
+		std::map<std::string, int>			serverKeys;
+		std::vector<std::string>			serverParameters;
+		std::vector<std::string>			localParameters;
 		std::vector<std::string>			errorPage;
-		std::vector<std::string>			autoindexPage;
+		std::map<std::string, std::string>	errorsMap;
 
-		ValidConfigKeys();
 		ValidConfigKeys(int responder);
+		ValidConfigKeys();
 		~ValidConfigKeys();
 	};
 }

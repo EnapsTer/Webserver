@@ -1,9 +1,5 @@
-//
-// Created by Janelle Kassandra on 3/13/22.
-//
-
-#ifndef VOVA_ALOCATION_HPP
-#define VOVA_ALOCATION_HPP
+#ifndef ALOCATION_HPP
+#define ALOCATION_HPP
 
 #include <iostream>
 #include <map>
@@ -17,39 +13,41 @@ namespace ft {
         ALocation();
         ALocation &operator=(const ALocation& other);
 
-        std::string _root;
-        std::string _index;
-		std::string _uploadPath;
-        bool _isGet;
-        bool _isPost;
-        bool _isDelete;
-		bool _autoIndex;
-		std::map<int, std::string>	_errorPages;
+        std::string index_;
+        std::string root_;
+		bool autoIndex_;
+		std::string uploadPath_;
+        bool isDelete_;
+        bool isPost_;
+        bool isGet_;
+
+		std::map<int, std::string>	errorPages_;
 
     public:
 
         virtual ~ALocation();
 
-        void setRoot(const std::string &root);
-        const std::string &getRoot() const;
-
-        void setIndex(const std::string &index);
         const std::string &getIndex() const;
+        void setIndex(const std::string &index);
 
-		void setUploadPath(const std::string &path);
-		const std::string &getUploadPath() const;
+        const std::string &getRoot() const;
+        void setRoot(const std::string &root);
 
-        void setIsGet(const bool &status);
-        const bool &getIsGet() const;
-
-        void setIsPost(const bool &status);
-        const bool &getIsPost() const;
-
-        void setIsDelete(const bool &status);
-        const bool &getIsDelete() const;
-
-		void setAutoIndex(const bool &autoIndex);
 		const bool &getAutoIndex() const;
+		void setAutoIndex(const bool &autoIndex);
+
+		const std::string &getUploadPath() const;
+		void setUploadPath(const std::string &path);
+
+        const bool &getIsDelete() const;
+        void setIsDelete(const bool &status);
+
+        const bool &getIsPost() const;
+        void setIsPost(const bool &status);
+
+        const bool &getIsGet() const;
+        void setIsGet(const bool &status);
+
 
 		void setErrorPages(const int& code, const std::string& path);
 		std::map<int, std::string> &getErrorPages();
@@ -57,4 +55,4 @@ namespace ft {
 
 }
 
-#endif //VOVA_ALOCATION_HPP
+#endif

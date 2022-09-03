@@ -1,23 +1,19 @@
-//
-// Created by Janelle Kassandra on 3/8/22.
-//
-
-#ifndef VOVA_PORT_HPP
-#define VOVA_PORT_HPP
+#ifndef PORT_HPP
+#define PORT_HPP
 
 #include <iostream>
 #include <arpa/inet.h>
-namespace ft {
 
+namespace ft {
     class Port {
 
     private:
 
-        u_short _port;
-        in_addr_t _host;
+        u_short port_;
+        in_addr_t host_;
 
-        void _setPort(const u_short &port);
-        void _setHost(const in_addr_t &host);
+        void setPort_(const u_short &port);
+        void setHost_(const in_addr_t &host);
 
     public:
 
@@ -33,5 +29,4 @@ namespace ft {
 
 }
 
-
-#endif //VOVA_PORT_HPP
+#endif

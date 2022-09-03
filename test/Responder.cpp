@@ -1,34 +1,281 @@
 #include "Responder.hpp"
 
-
-ft::Responder::Responder(std::vector<Server> & vec): _servers(vec), _valid_conf(1)
+ft::Responder::Responder(std::vector<Server> & vec): servers_(vec), validConfig_(1)
 {
-        FD_ZERO(&_master);
-        FD_ZERO(&writeMaster);
+        FD_ZERO(&master_);
+        FD_ZERO(&writeMaster_);
 }
 
-void        ft::Responder::action(int fd)
+void ft::Responder::parseRequest(fd_data &fd_dat)
 {
-        int status = _fd_host_map[fd]._status;
+    std::string s(buff_);
+    std::istringstream in(s);
+    in >> fd_dat.requestType_;
+    in >> fd_dat.url_;
+    in >> fd_dat.http11_;
+    if (fd_dat.http11_ != "HTTP/1.1") {
+        fd_dat.responseCode_ = 505;
+        return;
+    }
+    std::cout << fd_dat.url_ << "                  ***" << std::endl;
+    std::string reqline = "a";
+    std::string val;
+    std::string key;
+    int count =0;
+
+    while (reqline != "" && std::getline(in, reqline)) {
+        count++;
+        if (count > 2 && reqline == "\r")
+            break;
+        val = "";
+        key = "";
+        std::istringstream temp(reqline);
+        temp >> key;
+        std::string t;
+        while (temp >> t)
+            val += t;
+        if (key != "")
+            fd_dat.requestHeadMap_[key] = val;
+    }
+    if (fd_dat.requestHeadMap_["Host:"] != "") {
+        fd_dat.requestHeadMap_["Host:"] =
+                fd_dat.requestHeadMap_["Host:"].substr(0, fd_dat.requestHeadMap_["Host:"].find(':'));
+    }
+    findServer(fd_dat);
+    if (fd_dat.requestType_ != "GET" && fd_dat.requestType_ != "POST" && fd_dat.requestType_ != "DELETE") {
+        fd_dat.status_ = Send;
+        std::string s = "";
+        in >> s;
+        if (s != "") {
+            FD_CLR(fd_dat.fd, &master_);
+            close(fd_dat.fd);
+            std::cout << fd_dat.fd << " closed"<< std::endl;
+            fd_dat.status_ = ClosedFd;
+            fd_dat.responseCode_ = 499;
+            return;
+        }
+        fd_dat.responseCode_ = 400;
+        return;
+    }
+    if (fd_dat.responseCode_ >= 300)
+        return;
+
+    if (fd_dat.requestType_ == "POST") {
+        if (fd_dat.location_ != 0) {
+            if (!fd_dat.location_->getIsPost()) {
+                fd_dat.responseCode_ = 405;
+                return;
+            }
+        }
+        else if(!fd_dat.server_->getIsPost()) {
+            fd_dat.responseCode_ = 405;
+            return;
+        }
+        if (fd_dat.requestHeadMap_["Content-Type:"] != "image/jpeg" && fd_dat.requestHeadMap_["Content-Type:"] != "text/html;charset=utf-8" &&
+            fd_dat.requestHeadMap_["Content-Type:"] != "application/x-www-form-urlencoded" && fd_dat.requestHeadMap_["Content-Type:"] != "text/html" &&
+            fd_dat.requestHeadMap_["Content-Type:"].find("multipart") != 0 && fd_dat.requestHeadMap_["Content-Type:"] != "plain/text") {
+            std::cout << fd_dat.requestHeadMap_["Content-Type:"] << std::endl;
+            fd_dat.responseCode_ = 415;
+            return;
+        }
+        int j;
+        j = s.find("\r\n\r\n");
+        if (j > 1024)
+            fd_dat.responseCode_ = 400;
+        if (fd_dat.requestHeadMap_["Content-Length:"] != "") {
+            fd_dat.bodyLength_ = static_cast<int>(strtod(fd_dat.requestHeadMap_["Content-Length:"].c_str(), 0));
+            if ((fd_dat.server_->getMaxBodySize() && fd_dat.server_->getMaxBodySize() < fd_dat.bodyLength_) ||
+                (!fd_dat.server_->getMaxBodySize() && fd_dat.bodyLength_ > 100000)) {
+                fd_dat.responseCode_ = 413;
+                return;
+            }
+            std::string upload_dir =  "./www/" + fd_dat.server_->getRoot();
+            if (fd_dat.location_ != 0 && fd_dat.location_->getIsCgi())
+                upload_dir += "/inCgi" + intToString(fd_dat.fd);
+            else {
+                if (fd_dat.location_ != 0)
+                    upload_dir += fd_dat.location_->getUrl();
+                upload_dir += fd_dat.requestHeadMap_["name:"];
+                if (fd_dat.requestHeadMap_["Content-Type:"] == "text/html;charset=utf-8" || fd_dat.requestHeadMap_["Content-Type:"] == "application/x-www-form-urlencoded"
+                    || fd_dat.requestHeadMap_["Content-Type:"] == "text/html" || fd_dat.requestHeadMap_["Content-Type:"] == "plain/text")
+                    upload_dir += intToString(fd_dat.fd) + "_.txt";
+                else
+                    upload_dir += intToString(fd_dat.fd) + "_.jpg";
+            }
+            fd_dat._outdata.open(upload_dir);
+            if (!fd_dat._outdata.is_open()) {
+                fd_dat.responseCode_ = 500;
+                return;
+            }
+            fd_dat._outdata.write(&buff_[j + 4], fd_dat._wasreaded - j - 4);
+            if(fd_dat._outdata.bad() || fd_dat._outdata.fail()) {
+                fd_dat.responseCode_ = 500;
+                fd_dat._outdata.close();
+                return;
+            }
+            fd_dat.bodyLength_ -= (fd_dat._wasreaded - j - 4);
+            if (fd_dat.bodyLength_ == 0) {
+                fd_dat._outdata.close();
+                FD_SET(fd_dat.fd, &writeMaster_);
+                if (fd_dat.location_ != 0 && fd_dat.location_->getIsCgi()) {
+                    fd_dat.response_ = "HTTP/1.1 ";
+                    fd_dat.status_ = Cgi;
+                    return;
+                }
+                fd_dat.response_ = "HTTP/1.1 200 OK\nContent-Length: 2\r\n\r\nOK";
+                fd_dat.status_ = Send;
+                return;
+            }
+            fd_dat.status_ = ReadBody;
+        }
+        else if (fd_dat.requestHeadMap_["Transfer-Encoding:"] == "") {
+            fd_dat.responseCode_ = 400;
+        }
+        else {
+            fd_dat._is_chunked = true;
+            fd_dat._chunk_ostatok = 0;
+            std::string upload_dir =  "./www/" + fd_dat.server_->getRoot();
+            if (fd_dat.location_ != 0 && fd_dat.location_->getIsCgi())
+                upload_dir += "/inCgi" + intToString(fd_dat.fd);
+            else {
+                if (fd_dat.location_ != 0)
+                    upload_dir += fd_dat.location_->getUrl();
+                upload_dir += fd_dat.requestHeadMap_["name:"];
+                if (fd_dat.requestHeadMap_["Content-Type:"] == "text/html;charset=utf-8" || fd_dat.requestHeadMap_["Content-Type:"] == "application/x-www-form-urlencoded" ||
+                    fd_dat.requestHeadMap_["Content-Type:"] == "text/html" || fd_dat.requestHeadMap_["Content-Type:"] == "plain/text")
+                    upload_dir += intToString(fd_dat.fd) + "_.txt";
+                else
+                    upload_dir += intToString(fd_dat.fd) + "_.jpg";
+            }
+            fd_dat._outdata.open(upload_dir);
+            if (!fd_dat._outdata.is_open()) {
+                fd_dat.responseCode_ = 500;
+                return;
+            }
+            int ostalos = fd_dat._wasreaded;
+            fd_dat._wasreaded -= (j + 4);
+            if (fd_dat._wasreaded > 0) {
+                j = j+4;
+                int z = j;
+                int int_hex = -1;
+                count = 0;
+                while (int_hex != 0 && j < ostalos) {
+                    z = j;
+
+                    while (buff_[z] != '\r' && z < ostalos)
+                        z++;
+                    char hex[z-j + 1];
+                    bzero (hex, z-j + 1);
+                    strncpy(hex, &buff_[j], z - j);
+                    int_hex = hexToInt(hex);
+                    if (int_hex == 0) {
+                        std::cout << "NOLLL" << std::endl;
+                        break;
+                    }
+                    if (int_hex < 0) {
+                        fd_dat.responseCode_ = 400;
+                        return;
+                    }
+                    z = z + 2;
+                    if (z < ostalos && z+ int_hex < ostalos) {
+                        char chunk[int_hex + 1];
+                        bzero(chunk, int_hex+1);
+                        strncpy(chunk, &buff_[z], int_hex);
+                        std::string str_chunk(chunk);
+
+                        fd_dat._outdata.write(&buff_[z], int_hex);
+                        if (fd_dat._outdata.bad() || fd_dat._outdata.fail()) {
+                            fd_dat.responseCode_ = 500;
+                            fd_dat._outdata.close();
+                            return;
+                        }
+                        std::cout <<"<" <<str_chunk << "> string is\n";
+                    }
+                    z = z + int_hex;
+                    if (z + 1 >= ostalos) {
+                        fd_dat.responseCode_ = 400;
+                        return;
+                    }
+
+                    if (buff_[z] == '\r' && buff_[z + 1] == '\n')
+                        j = z + 2;
+                    else {
+                        fd_dat.responseCode_ = 400;
+                        return;
+                    }
+                }
+                fd_dat._outdata.close();
+                FD_SET(fd_dat.fd, &writeMaster_);
+                if (fd_dat.location_ != 0 && fd_dat.location_->getIsCgi()) {
+                    fd_dat.status_ = Cgi;
+                    fd_dat.response_ = "HTTP/1.1 ";
+                    return;
+                }
+                fd_dat.status_ = Send;
+                fd_dat.response_ = "HTTP/1.1 200 OK\nContent-Length: 2\r\n\r\nOK";
+                return;
+            }
+            else {
+                fd_dat.status_ = ReadBody;
+                return ;
+            }
+        }
+    }
+    else if (fd_dat.requestType_ == "DELETE") {
+        if (fd_dat.location_ != 0) {
+            if (!fd_dat.location_->getIsDelete()) {
+                fd_dat.responseCode_ = 405;
+                return;
+            }
+        }
+        else if(!fd_dat.server_->getIsDelete()) {
+            fd_dat.responseCode_ = 405;
+            return;
+        }
+        std::string filename = "./www/server1" + fd_dat.url_;
+        if (remove(filename.c_str()) < 0) {
+            fd_dat.responseCode_ = 500;
+            return;
+        }
+        fd_dat.status_ = Send;
+        fd_dat.response_ = "HTTP/1.1 200 OK\nContent-Length: 2\r\n\r\nOK";
+    }
+    else if (fd_dat.requestType_ == "GET") {
+        if (fd_dat.location_ != 0) {
+            if (!fd_dat.location_->getIsGet()) {
+                fd_dat.responseCode_ = 405;
+                return;
+            }
+        }
+        else if(!fd_dat.server_->getIsGet()) {
+            fd_dat.responseCode_ = 405;
+            return;
+        }
+    }
+}
+
+void ft::Responder::action(int fd)
+{
+        int status = fdHostMap_[fd].status_;
         switch (status)
         {
-                case Nosession:
-                        make_session(fd);
+                case WithoutSession:
+                    createSession(fd);
                         break;
-                case Readbody:
-                       read_post_body(fd);
+                case ReadBody:
+                    readPostBody(fd);
                         break;
                 case Send:
-                        send_resp(fd);
+                    sendResponse(fd);
                         break;
-                case Sendbody:
-                        send_resp_body(fd);
+                case SendBody:
+                    sendResponseBody(fd);
                         break;
                 case Cgi:
-                    cgi_handler(fd);
+                    cgiHandler(fd);
                     break;
-                case Closefd:
-                        close_session(fd);
+                case ClosedFd:
+                    closeSession(fd);
                         break;
                 default:
                         break;
@@ -36,618 +283,283 @@ void        ft::Responder::action(int fd)
         return;
 }
 
-void        ft::Responder::find_server(fd_data &fd_dat)
-{
+void ft::Responder::createAutoIndex(fd_data &fd_dat) {
+    if (fd_dat.requestType_ == "GET") {
+        fd_dat.autoIndex_ += "";
+        fd_dat.autoIndex_ += "<!DOCTYPE html>\n";
+        fd_dat.autoIndex_ += "<html>\n";
+        fd_dat.autoIndex_ += "<head>\n";
+        fd_dat.autoIndex_ += "<meta http-equiv=\"Content\" content=\"text/html; charset=UTF-8\">\n";
+        fd_dat.autoIndex_ += "</head>\n";
+        fd_dat.autoIndex_ += "<body>\n";
+        fd_dat.autoIndex_ += "<table>\n";
+        fd_dat.autoIndex_ += "<tbody id=\"tbody\">\n";
 
-        std::vector<Server>::iterator result = _servers.end();
-	std::vector<Server>::iterator temp_0_s = _servers.end();
-	std::vector<Server>::iterator temp_h = _servers.end();
-	std::vector<Server>::iterator temp_0 = _servers.end();
-	std::vector<Server>::iterator it = _servers.begin();
-        while (it != _servers.end())
-        {
-                if (fd_dat._port == it->getPort())
-                {
-                        if (fd_dat._ip == it->getHost())
-                        {
-                                if (fd_dat._request_head_map["Host:"] == it->getServerName())
-                                {
-                                        result = it;
-                                        break;
-                                }
-                                else if (temp_h == _servers.end())
-                                        temp_h = it;
-                        }
-                        else if (it->getHost() == 0)
-                        {
-                                if (fd_dat._request_head_map["Host:"] == it->getServerName())
-                                {
-                                        if (temp_0_s == _servers.end())
-                                                temp_0_s = it;
-                                }
-                                else if (temp_0 == _servers.end())
-                                        temp_0 = it;
-                        }
+        DIR *dir;
+        std::string slash = "";
+        struct dirent *ent;
+        bzero(buff_, BUFFER);
+        std::string dirbuf(getcwd(buff_, BUFFER));
+        dirbuf += fd_dat.filename_;
+        if (sDir(dirbuf.c_str())) {
+            if ((dir = opendir(dirbuf.c_str())) != 0) {
+                while((ent = readdir(dir)) != 0) {
+                    slash = "";
+                    std::string tmp (ent->d_name);
+                    if (sDir((dirbuf + tmp).c_str()))
+                        slash = "/";
+                    if (tmp != ".")
+                        fd_dat.autoIndex_ += "<tr><td><form method=\"GET\" action=\"\"> <a href=\"" + tmp + slash + "\">" + tmp + "</a></form></td>\n";
                 }
-                it++;
+            }
+            else
+                fd_dat.responseCode_ = 404;
+            closedir(dir);
         }
-        if (result == _servers.end())
-        {
-                if (temp_0_s != _servers.end())
-                        result = temp_0_s;
-                else
-                {
-                        if (temp_h != _servers.end())
-                                result = temp_h;
-                        else
-                                result = temp_0;
-                }
-                
+        else {
+            fd_dat.status_ = Send;
+            fd_dat.autoIndex_ = "";
+            fd_dat.filename_.resize(fd_dat.filename_.size() - 1);
+            fd_dat.filename_ = "." + fd_dat.filename_;
+            return;
         }
-        fd_dat._server = &(*result);
-        if (fd_dat._url == "/")
-        {
-			if (result->getIndex() != "")
-                                fd_dat._filename = "./www/" + result->getRoot() + "/" + result->getIndex();
-			else if (result->getAutoIndex())
-			{
-				fd_dat._filename = "/www/" + result->getRoot()  + fd_dat._url + "/";
-				make_Autoindex(fd_dat);
-			}
-			else
-			{
-				fd_dat._code_resp = 406;
-                                return;
-			}
-        }
-        else
-        {
-			std::vector<Location>::iterator v_loc = result->getLocations().begin();
-                while (v_loc != result->getLocations().end())
-                {
-                        if ((fd_dat._url.find(v_loc->getUrl()) == 0 ) || ((fd_dat._url + "/").find(v_loc->getUrl()) == 0))
-                                break;
-                        v_loc++;
-                }
-                if (v_loc != result->getLocations().end())
-                {
-                        fd_dat._location = &(*v_loc);
-                        if (v_loc->getRoot() != "")
-                        {
-                                fd_dat._filename = "./www/" + result->getRoot() + v_loc->getRoot();
-                                if (v_loc->getIndex() != "")
-                                {
-                                         
-                                         if ((fd_dat._url == v_loc->getUrl() ) || ((fd_dat._url + "/") == v_loc->getUrl()))
-                                        {
-                                                fd_dat._filename = "./www/" + result->getRoot() + v_loc->getUrl() + v_loc->getIndex();
-                                        
-                                        }
-                                        else
-                                                fd_dat._filename = "./www/" + result->getRoot() + fd_dat._url;
-                                       
-                                }
-                                else
-                                {
-                                        if (result->getAutoIndex())
-                                        {
-                                                fd_dat._filename = "/www/" + result->getRoot() + fd_dat._url + "/";
-                                                make_Autoindex(fd_dat);
-                                        }
-                                        else
-                                                fd_dat._code_resp = 406;
-                                }
-                        }
-                        else                                            /*** Lokation without root ***/
-                        {
-                                if (v_loc->getIndex() != "")            /*** Index is found ***/
-                                {
-                                        if (v_loc->getIsRedirect())
-                                        {
-                                                fd_dat._resp ="";
-                                                fd_dat._resp += "HTTP/1.1 302 Find\nLocation: http://" + v_loc->getIndex() + "\r\n\r\n";
-                                                fd_dat._code_resp = 302;
-                                                return ;
-                                        }
-                                        if ((fd_dat._url == v_loc->getUrl() ) || ((fd_dat._url + "/") == v_loc->getUrl()))
-                                        {
-                                                fd_dat._filename = "./www/" + result->getRoot() + v_loc->getUrl() + v_loc->getIndex();
-                                        
-                                        }
-
-                                        else
-                                                fd_dat._filename = "./www/" + result->getRoot() + fd_dat._url;
-                                
-                                }
-                        else                                            /*** Lokation without index page ***/
-                                {
-                                        if (result->getAutoIndex())
-                                        {
-                                                fd_dat._filename = "/www/" + result->getRoot() + fd_dat._url + "/";
-                                                make_Autoindex(fd_dat);
-                                        }
-                                        else
-                                                fd_dat._code_resp = 406;
-                                }
-                        if (v_loc->getIsCgi())
-                        {
-                                fd_dat._status = Cgi;
-                                return;
-                        }
-                        }
-                }
-                else if (fd_dat._url[fd_dat._url.size() - 1] == '/') /*** Location is not found ***/
-                {
-                        if (result->getAutoIndex())
-			{
-				fd_dat._filename = "/www/" + result->getRoot()  + fd_dat._url;// "/";
-				make_Autoindex(fd_dat);
-			}
-			else
-				fd_dat._code_resp = 406;
-                }
-                else
-                        fd_dat._filename = "./www/" + result->getRoot() + fd_dat._url;
-        }
+        fd_dat.autoIndex_ += "</tbody>\n";
+        fd_dat.autoIndex_ += "</table>\n";
+        fd_dat.autoIndex_ += "</body>\n";
+        fd_dat.autoIndex_ += "</html>";
+        fd_dat.status_ = Send;
+    }
 }
 
-void        ft::Responder::parse_request(fd_data &fd_dat)
-{
-	std::string s(_buff);
-	std::istringstream in(s);
-        in >> fd_dat._request_type;
-        in >> fd_dat._url;
-        in >> fd_dat._http11;
-        if (fd_dat._http11 != "HTTP/1.1")
-        {
-                fd_dat._code_resp = 505;
-                return;
-        }
-	std::cout << fd_dat._url << "                  ***"<< std::endl;
-	std::string reqline = "a";
-	std::string val;
-	std::string key;
-        int count =0;
-        while (reqline != "" && std::getline(in, reqline))
-        {
-                count++;
-                if (count > 2 && reqline == "\r")
-                        break;
-                val = "";
-                key = "";
-			std::istringstream temp(reqline);
-                temp >> key;
-			std::string t;
-                while (temp >> t)
-                {
-                        val += t;
-                }
-                if (key != "")
-                        fd_dat._request_head_map[key] = val;
-        }
-        if (fd_dat._request_head_map["Host:"] != "")
-        {
-                fd_dat._request_head_map["Host:"] = 
-                        (fd_dat._request_head_map["Host:"]).substr(0, fd_dat._request_head_map["Host:"].find(':'));
-        }
-        find_server(fd_dat);
-            if (fd_dat._request_type != "GET" && fd_dat._request_type != "POST" && fd_dat._request_type != "DELETE")
-        {
-                fd_dat._status = Send;
-                std::string s = "";
-                in >> s;
-                if (s != "")
-                {
-                    FD_CLR(fd_dat.fd, &_master);
-                    close(fd_dat.fd);
-                    std::cout << fd_dat.fd << " closed"<< std::endl;
-                    fd_dat._status = Closefd;
-                    fd_dat._code_resp = 499;
-                    return;
-                }
-                fd_dat._code_resp = 400;
-                return;
-        }
-        if (fd_dat._code_resp >= 300)
-                return;
-        
-        if (fd_dat._request_type == "POST")
-        {
-                if (fd_dat._location != 0)
-                {
-                        if (!fd_dat._location->getIsPost())
-                        {
-                                fd_dat._code_resp = 405;
-                                return;
-                        }
-                }
-                else if(!fd_dat._server->getIsPost())
-                {
-                        fd_dat._code_resp = 405;
-                        return;
-                }
-                if (fd_dat._request_head_map["Content-Type:"] != "image/jpeg" && fd_dat._request_head_map["Content-Type:"] != "text/html;charset=utf-8" &&
-                fd_dat._request_head_map["Content-Type:"] != "application/x-www-form-urlencoded" && fd_dat._request_head_map["Content-Type:"] != "text/html" &&
-                fd_dat._request_head_map["Content-Type:"].find("multipart") != 0 && fd_dat._request_head_map["Content-Type:"] != "plain/text")
-                {
-                    std::cout << fd_dat._request_head_map["Content-Type:"] << std::endl;
-                    fd_dat._code_resp = 415;
-                        return;
-                }
-                int j;      
-                j = s.find("\r\n\r\n");
-                if (j > 1024)
-                        fd_dat._code_resp = 400;
-                if (fd_dat._request_head_map["Content-Length:"] != "")
-                {
-                        fd_dat._len_body = static_cast<int>(strtod(fd_dat._request_head_map["Content-Length:"].c_str(), 0));
-                        if ((fd_dat._server->getMaxBodySize() && fd_dat._server->getMaxBodySize() < fd_dat._len_body) ||
-                                (!fd_dat._server->getMaxBodySize() && fd_dat._len_body > 100000))
-                        {
-                                fd_dat._code_resp = 413;
-                                return;
-                        }
-                        std::string upload_dir =  "./www/" + fd_dat._server->getRoot();
-                        if (fd_dat._location !=0 && fd_dat._location->getIsCgi())
-                                upload_dir += "/inCgi" + int_to_string(fd_dat.fd);     
-                        else
-                        {
-                                                if (fd_dat._location != 0)
-                                                upload_dir += fd_dat._location->getUrl();
-                                        upload_dir += fd_dat._request_head_map["name:"];
-                                        if (fd_dat._request_head_map["Content-Type:"] == "text/html;charset=utf-8" || fd_dat._request_head_map["Content-Type:"] == "application/x-www-form-urlencoded"
-                                        || fd_dat._request_head_map["Content-Type:"] == "text/html" || fd_dat._request_head_map["Content-Type:"] == "plain/text")
-                                                upload_dir += int_to_string(fd_dat.fd) + "_.txt";
-                                        else
-                                                upload_dir += int_to_string(fd_dat.fd) + "_.jpg";
-                        }
-                        // fd_dat._filename = upload_dir;
-                        fd_dat._outdata.open(upload_dir);
-                        if (!fd_dat._outdata.is_open())
-                        {
-                                fd_dat._code_resp = 500;
-                                return;
-                        }
-                        fd_dat._outdata.write(&_buff[ j + 4], fd_dat._wasreaded - j -4);
-						if(fd_dat._outdata.bad() || fd_dat._outdata.fail())
-						{
-							fd_dat._code_resp = 500;
-							fd_dat._outdata.close();
-							return;
-						}
-                        fd_dat._len_body -= (fd_dat._wasreaded - j - 4);
-                        if (fd_dat._len_body == 0)
-                        {
-                                fd_dat._outdata.close();
-                                FD_SET(fd_dat.fd, &writeMaster);
-                                if (fd_dat._location != 0 && fd_dat._location->getIsCgi())
-                                {
-                                        fd_dat._resp = "HTTP/1.1 ";
-                                        fd_dat._status = Cgi;
-                                        return;
-                                }
-                                fd_dat._resp = "HTTP/1.1 200 OK\nContent-Length: 2\r\n\r\nOK";
-                                fd_dat._status = Send;
-                                return;
-                        }
-                        fd_dat._status = Readbody;
-                }
-                else if (fd_dat._request_head_map["Transfer-Encoding:"] == "")
-                {
-                        fd_dat._code_resp = 400;
-                }
-                else                                                                    /*** chunked ***/
-                {
-                        fd_dat._is_chunked = true;
-                        fd_dat._chunk_ostatok = 0;
-                        std::string upload_dir =  "./www/" + fd_dat._server->getRoot();
-                        if (fd_dat._location !=0 && fd_dat._location->getIsCgi())
-                                upload_dir += "/inCgi" + int_to_string(fd_dat.fd);  
-                        else
-                        {
-                                if (fd_dat._location != 0)
-                                        upload_dir += fd_dat._location->getUrl();
-                                upload_dir += fd_dat._request_head_map["name:"];
-                                if (fd_dat._request_head_map["Content-Type:"] == "text/html;charset=utf-8" || fd_dat._request_head_map["Content-Type:"] == "application/x-www-form-urlencoded" ||
-                                fd_dat._request_head_map["Content-Type:"] == "text/html" || fd_dat._request_head_map["Content-Type:"] == "plain/text")
-                                        upload_dir += int_to_string(fd_dat.fd) + "_.txt";
-                                else
-                                        upload_dir += int_to_string(fd_dat.fd) + "_.jpg";
-                        }
-                        // fd_dat._filename = upload_dir;
-                        fd_dat._outdata.open(upload_dir);
-                        if (!fd_dat._outdata.is_open())
-                        {
-                                fd_dat._code_resp = 500;
-                                return;
-                        }
-                        int ostalos = fd_dat._wasreaded;
-                        fd_dat._wasreaded -= (j + 4);
-//					std::count << " FD_REaded " << fd_dat._wasreaded << std::endl;
-                        if (fd_dat._wasreaded > 0)
-                        {
-                                j = j+4;
-                                int z = j;
-                                int int_hex = -1;
-                                count = 0;
-                                while (int_hex != 0 && j < ostalos)
-                                {
-                                        z = j;
-//									std::count <<  (_buff[z] == '\r') << " b[zzz]" << std::endl;
-
-                                        while (_buff[z]!= '\r' && z < ostalos)
-                                                z++;
-                                        char hex[z-j + 1];
-                                        bzero (hex, z-j + 1);
-                                        strncpy(hex, &_buff[j], z-j);
-//									count << hex << "hex\n";
-                                        int_hex = hexToInt(hex);
-                                        if (int_hex == 0)
-                                        {
-											std::cout << "NOLLL" << std::endl;
-                                                break;
-                                        }
-                                        if (int_hex < 0)
-                                        {
-                                                fd_dat._code_resp = 400;
-                                                return;
-                                        }
-//									std::count << int_hex <<"int_hex"<< std::endl;
-                                        z = z + 2;
-                                        if (z < ostalos && z+ int_hex < ostalos)
-                                        {
-                                                char chunk[int_hex + 1];
-                                                bzero(chunk, int_hex+1);
-                                                strncpy(chunk, &_buff[z], int_hex);
-                                                std::string str_chunk(chunk);
-
-                                                fd_dat._outdata.write(&_buff[z], int_hex);
-												if(fd_dat._outdata.bad() || fd_dat._outdata.fail())
-												{
-													fd_dat._code_resp = 500;
-													fd_dat._outdata.close();
-													return;
-												}
-                                                std::cout <<"<" <<str_chunk << "> string is\n";
-                                        }
-                                        z = z + int_hex;
-                                        if (z + 1 >= ostalos)
-                                        {
-                                                fd_dat._code_resp = 400;
-                                                return;
-                                        }
-                                        
-                                        if (_buff[z] == '\r' && _buff[z+1] == '\n')
-                                        {
-                                                j = z + 2;
-                                        }
-                                        else
-                                        {
-                                                fd_dat._code_resp = 400;
-                                                return;
-                                        }
-                                                
-                                }
-                                fd_dat._outdata.close();
-                                FD_SET(fd_dat.fd, &writeMaster);
-                                if (fd_dat._location != 0 && fd_dat._location->getIsCgi())
-                                {
-                                        fd_dat._resp = "HTTP/1.1 ";
-                                        fd_dat._status = Cgi;
-                                        return;
-                                }
-                                fd_dat._resp = "HTTP/1.1 200 OK\nContent-Length: 2\r\n\r\nOK";
-                                fd_dat._status = Send;
-                                return;
-                        }
-                        else 
-                        {
-                                fd_dat._status = Readbody;
-                                return ;
-
-                        }
-                }
-        }
-        else if (fd_dat._request_type == "DELETE")
-        {
-                if (fd_dat._location != 0)
-                {
-                        if (!fd_dat._location->getIsDelete())
-                        {
-                                fd_dat._code_resp = 405;
-                                return;
-                        }
-                }
-                else if(!fd_dat._server->getIsDelete())
-                {
-                        fd_dat._code_resp = 405;
-                        return;
-                }
-                std::string filename = "./www/server1" + fd_dat._url;
-                if (remove(filename.c_str()) < 0)
-                {
-                        fd_dat._code_resp = 500;
-                        return;
-                }
-                fd_dat._resp = "HTTP/1.1 200 OK\nContent-Length: 2\r\n\r\nOK";
-                fd_dat._status = Send;
-        }
-        else if (fd_dat._request_type == "GET")
-        {
-                if (fd_dat._location != 0)
-                {
-                        if (!fd_dat._location->getIsGet())
-                        {
-                                fd_dat._code_resp = 405;
-                                return;
-                        }
-                }
-                else if(!fd_dat._server->getIsGet())
-                {
-                        fd_dat._code_resp = 405;
-                        return;
-                }
-        }
-
-}
-
-bool ft::Responder::s_dir(const char *path)
+bool ft::Responder::sDir(const char *path)
 {
 	struct stat s;
-	if (lstat(path, &s) == -1) {
+	if (lstat(path, &s) == -1)
 		return false;
-	}
 	return S_ISDIR(s.st_mode);
 }
 
-void ft::Responder::make_Autoindex(fd_data &fd_dat) {
-
-	if (fd_dat._request_type == "GET") {
-				fd_dat._autoIndex += "";
-				fd_dat._autoIndex += "<!DOCTYPE html>\n";
-				fd_dat._autoIndex += "<html>\n";
-				fd_dat._autoIndex += "<head>\n";
-				fd_dat._autoIndex += "<meta http-equiv=\"Content\" content=\"text/html; charset=UTF-8\">\n";
-				fd_dat._autoIndex += "</head>\n";
-				fd_dat._autoIndex += "<body>\n";
-				fd_dat._autoIndex += "<table>\n";
-				fd_dat._autoIndex += "<tbody id=\"tbody\">\n";
-
-				DIR *dir;
-				std::string slash = "";
-				struct dirent *ent;
-				bzero(_buff, BUFFER);
-				std::string dirbuf(getcwd(_buff, BUFFER));
-				dirbuf += fd_dat._filename;
-				if (s_dir(dirbuf.c_str())) {
-					if ((dir = opendir(dirbuf.c_str())) != 0) {
-
-						while((ent = readdir(dir)) != 0) {
-							slash = "";
-							std::string tmp (ent->d_name);
-							if (s_dir((dirbuf + tmp).c_str()))
-								slash = "/";
-							if (tmp != ".")
-							fd_dat._autoIndex += "<tr><td><form method=\"GET\" action=\"\"> <a href=\"" + tmp + slash + "\">" + tmp + "</a></form></td>\n";
-						}
-					}
-                                        else
-                                        {
-                                                fd_dat._code_resp = 404;
-                                        }
-					closedir(dir);
-				}
-				else {
-					fd_dat._autoIndex = "";
-					fd_dat._status = Send;
-					fd_dat._filename.resize(fd_dat._filename.size() - 1);
-					fd_dat._filename = "." + fd_dat._filename;
-					return;
-				}
-				fd_dat._autoIndex += "</tbody>\n";
-				fd_dat._autoIndex += "</table>\n";
-				fd_dat._autoIndex += "</body>\n";
-				fd_dat._autoIndex += "</html>";
-				fd_dat._status = Send;
-	}
-}
-
-void        ft::Responder::make_session(int fd)
+void ft::Responder::closeSession(int fd)
 {
-        fd_data& fd_dat = _fd_host_map[fd];
-        fd_dat.fd = fd;
-        fd_dat._resp = "";
-        (void)_servers;
-        bzero(_buff, BUFFER);
-        int magic  = BUFFER;
-        if (fd_dat._status == Readbody && fd_dat._len_body < BUFFER)
-                magic = fd_dat._len_body;
-        int res = recv(fd, &_buff, magic, 0);
-        fd_dat._wasreaded = res;
-        if (res <= 0)
-        {
-                FD_CLR(fd, &_master);
-                close(fd);
-                std::cout << fd << " closed"<< std::endl;
-                fd_dat._status = Closefd;
-                return;
-        }
-        parse_request(fd_dat);
-        if (fd_dat._code_resp == 499)
-            return;
-        if (fd_dat._code_resp >= 300)                                           /*** Error pages send ***/
-        {
-                fd_dat._status = Send;
-                FD_SET(fd, &writeMaster);
-                return;
-        }
-        if (fd_dat._request_type == "POST" || fd_dat._status == Readbody)
-                return;
-        fd_dat._resp += fd_dat._http11 + " ";
-        if (fd_dat._status != Cgi) {
-            fd_dat._status = Send;
-            FD_SET(fd, &writeMaster);
-        }
-        else
-            FD_SET(fd, &writeMaster);
-        return;
+    fdHostMap_.erase(fd);
+    FD_CLR(fd, &master_);
+    close(fd);
 }
-
-void        ft::Responder::close_session(int fd)
-{
-        _fd_host_map.erase(fd);
-        FD_CLR(fd, &_master);
-        close(fd);
-        return;
-}
-
-
-                                                        /***    html error page generator       ***/
 
 std::string ft::Responder::errorInsertion (std::string key, std::string value, std::string str) {
-	std::string keys[] = {"KEY", "VALUE"};
-	std::string newStr;
-	size_t pos = 0;
-	size_t i = 0;
+    std::string keys[] = {"KEY", "VALUE"};
+    std::string newStr;
+    size_t pos = 0;
+    size_t i = 0;
 
-	pos = str.find(keys[i]);
-	if (pos == std::string::npos) {
-		i++;
-		pos = str.find(keys[i]);
-		key = value;;
-	}
-	newStr = str;
-	if (pos != std::string::npos) {
-		newStr = newStr.substr(0, pos);
-		newStr.insert(newStr.size(), key);
-		str = str.substr(pos + keys[i].size(), str.size());
-		newStr.insert(newStr.size(), str);
-	}
-	return newStr;
+    pos = str.find(keys[i]);
+    if (pos == std::string::npos) {
+        i++;
+        pos = str.find(keys[i]);
+        key = value;;
+    }
+    newStr = str;
+    if (pos != std::string::npos) {
+        newStr = newStr.substr(0, pos);
+        newStr.insert(newStr.size(), key);
+        str = str.substr(pos + keys[i].size(), str.size());
+        newStr.insert(newStr.size(), str);
+    }
+    return newStr;
+}
+
+void ft::Responder::createSession(int fd)
+{
+    (void)servers_;
+    fd_data& fd_dat = fdHostMap_[fd];
+
+    fd_dat.response_ = "";
+    fd_dat.fd = fd;
+
+    bzero(buff_, BUFFER);
+
+    int magic  = BUFFER;
+    if (fd_dat.status_ == ReadBody && fd_dat.bodyLength_ < BUFFER)
+        magic = fd_dat.bodyLength_;
+    int res = recv(fd, &buff_, magic, 0);
+    fd_dat._wasreaded = res;
+    if (res <= 0) {
+        FD_CLR(fd, &master_);
+        close(fd);
+        std::cout << fd << " closed"<< std::endl;
+        fd_dat.status_ = ClosedFd;
+        return;
+    }
+    parseRequest(fd_dat);
+    if (fd_dat.responseCode_ == 499)
+        return;
+    if (fd_dat.responseCode_ >= 300) {
+        fd_dat.status_ = Send;
+        FD_SET(fd, &writeMaster_);
+        return;
+    }
+    if (fd_dat.requestType_ == "POST" || fd_dat.status_ == ReadBody)
+        return;
+    fd_dat.response_ += fd_dat.http11_ + " ";
+    if (fd_dat.status_ != Cgi) {
+        fd_dat.status_ = Send;
+        FD_SET(fd, &writeMaster_);
+    }
+    else
+        FD_SET(fd, &writeMaster_);
+}
+
+
+void ft::Responder::findServer(fd_data &fd_dat)
+{
+
+    std::vector<Server>::iterator result = servers_.end();
+    std::vector<Server>::iterator temp_0_s = servers_.end();
+    std::vector<Server>::iterator temp_h = servers_.end();
+    std::vector<Server>::iterator temp_0 = servers_.end();
+    std::vector<Server>::iterator it = servers_.begin();
+    while (it != servers_.end()) {
+        if (fd_dat.port_ == it->getPort()) {
+            if (fd_dat.ip_ == it->getHost()) {
+                if (fd_dat.requestHeadMap_["Host:"] == it->getServerName()) {
+                    result = it;
+                    break;
+                }
+                else if (temp_h == servers_.end())
+                    temp_h = it;
+            }
+            else if (it->getHost() == 0) {
+                if (fd_dat.requestHeadMap_["Host:"] == it->getServerName()) {
+                    if (temp_0_s == servers_.end())
+                        temp_0_s = it;
+                }
+                else if (temp_0 == servers_.end())
+                    temp_0 = it;
+            }
+        }
+        it++;
+    }
+    if (result == servers_.end()) {
+        if (temp_0_s != servers_.end())
+            result = temp_0_s;
+        else {
+            if (temp_h != servers_.end())
+                result = temp_h;
+            else
+                result = temp_0;
+        }
+
+    }
+    fd_dat.server_ = &(*result);
+    if (fd_dat.url_ == "/") {
+        if (result->getIndex() != "")
+            fd_dat.filename_ = "./www/" + result->getRoot() + "/" + result->getIndex();
+        else if (result->getAutoIndex()) {
+            fd_dat.filename_ = "/www/" + result->getRoot() + fd_dat.url_ + "/";
+            createAutoIndex(fd_dat);
+        }
+        else {
+            fd_dat.responseCode_ = 406;
+            return;
+        }
+    }
+    else {
+        std::vector<Location>::iterator v_loc = result->getLocations().begin();
+        while (v_loc != result->getLocations().end()) {
+            if ((fd_dat.url_.find(v_loc->getUrl()) == 0 ) || ((fd_dat.url_ + "/").find(v_loc->getUrl()) == 0))
+                break;
+            v_loc++;
+        }
+        if (v_loc != result->getLocations().end()) {
+            fd_dat.location_ = &(*v_loc);
+            if (v_loc->getRoot() != "") {
+                fd_dat.filename_ = "./www/" + result->getRoot() + v_loc->getRoot();
+                if (v_loc->getIndex() != "") {
+
+                    if ((fd_dat.url_ == v_loc->getUrl() ) || ((fd_dat.url_ + "/") == v_loc->getUrl())) {
+                        fd_dat.filename_ = "./www/" + result->getRoot() + v_loc->getUrl() + v_loc->getIndex();
+
+                    }
+                    else
+                        fd_dat.filename_ = "./www/" + result->getRoot() + fd_dat.url_;
+
+                }
+                else {
+                    if (result->getAutoIndex()) {
+                        fd_dat.filename_ = "/www/" + result->getRoot() + fd_dat.url_ + "/";
+                        createAutoIndex(fd_dat);
+                    }
+                    else
+                        fd_dat.responseCode_ = 406;
+                }
+            }
+            else {
+                if (v_loc->getIndex() != "") {
+                    if (v_loc->getIsRedirect()) {
+                        fd_dat.response_ ="";
+                        fd_dat.response_ += "HTTP/1.1 302 Find\nLocation: http://" + v_loc->getIndex() + "\r\n\r\n";
+                        fd_dat.responseCode_ = 302;
+                        return ;
+                    }
+                    if ((fd_dat.url_ == v_loc->getUrl() ) || ((fd_dat.url_ + "/") == v_loc->getUrl())) {
+                        fd_dat.filename_ = "./www/" + result->getRoot() + v_loc->getUrl() + v_loc->getIndex();
+                    }
+
+                    else
+                        fd_dat.filename_ = "./www/" + result->getRoot() + fd_dat.url_;
+                }
+                else {
+                    if (result->getAutoIndex()) {
+                        fd_dat.filename_ = "/www/" + result->getRoot() + fd_dat.url_ + "/";
+                        createAutoIndex(fd_dat);
+                    }
+                    else
+                        fd_dat.responseCode_ = 406;
+                }
+                if (v_loc->getIsCgi()) {
+                    fd_dat.status_ = Cgi;
+                    return;
+                }
+            }
+        }
+        else if (fd_dat.url_[fd_dat.url_.size() - 1] == '/') {
+            if (result->getAutoIndex()) {
+                fd_dat.filename_ = "/www/" + result->getRoot() + fd_dat.url_;// "/";
+                createAutoIndex(fd_dat);
+            }
+            else
+                fd_dat.responseCode_ = 406;
+        }
+        else
+            fd_dat.filename_ = "./www/" + result->getRoot() + fd_dat.url_;
+    }
 }
 
 std::string ft::Responder::makeErrorPage (int errorCode) {
 	std::string errorPage = "";
 	std::string key;
 
-	std::ostringstream ss;
-	ss << errorCode;
-	key = ss.str();
-	for (size_t i = 0; i < 12; i++) {
-		errorPage += errorInsertion(key, _valid_conf.errorsMap[key],  _valid_conf.errorPage[i]) += "\n";
-	}
+	std::ostringstream stringStream;
+	stringStream << errorCode;
+	key = stringStream.str();
+	for (size_t i = 0; i < 12; i++)
+		errorPage += errorInsertion(key, validConfig_.errorsMap[key], validConfig_.errorPage[i]) += "\n";
 	return errorPage;
 }
 
-                                        /***    integer/string support          ***/
-                                        
-std::string int_to_string(int a)
+fd_set & ft::Responder::getMaster()
 {
-        std::stringstream k;
-                k << a;
-        std::string key;
-        k >> key;
-        return key;
+    return master_;
+}
+
+std::string intToString(int a)
+{
+    std::stringstream k;
+
+    k << a;
+    std::string key;
+    k >> key;
+    return key;
 }
 
 int	hexToInt(std::string str) {
@@ -663,493 +575,404 @@ int	hexToInt(std::string str) {
 	return val;
 }
 
-
-void    ft::Responder::send_resp(int fd)
+void ft::Responder::sendResponse(int fd)
 {
-        fd_data& fd_dat = _fd_host_map[fd];
-        if (fd_dat._code_resp < 400)
-        {
-                if (fd_dat._request_type == "POST" | fd_dat._request_type == "DELETE" | fd_dat._code_resp == 302)
-                {
-                        bzero(_buff, BUFFER);
-                        strcpy(_buff, fd_dat._resp.c_str());
-                        size_t si = fd_dat._resp.size();
-                        if (send(fd_dat.fd, _buff, si, 0) < 0)
-                        {
-                                FD_CLR(fd, &_master);
-                                close(fd);
-                                std::cout << fd << " closed"<< std::endl;
-                                fd_dat._status = Closefd;
-                                FD_CLR(fd, &writeMaster);
-                                return;
-                        }
-                        FD_CLR(fd, &writeMaster);
-                        fd_dat._status = Nosession;
-                        fd_dat._code_resp = 200;
-                        if (fd_dat._request_head_map["Connection:"] == "close")
-                        {
-                                FD_CLR(fd, &_master);
-                                close(fd);
-//                                cout << fd << " closed"<< endl;
-                                fd_dat._status = Closefd;
-                                return;
-                        }
-                        return;
-                }
-                if (fd_dat._autoIndex != "")
-                {
+    fd_data& fd_dat = fdHostMap_[fd];
+    if (fd_dat.responseCode_ < 400) {
+        if (fd_dat.requestType_ == "POST" | fd_dat.requestType_ == "DELETE" | fd_dat.responseCode_ == 302) {
+            bzero(buff_, BUFFER);
+            strcpy(buff_, fd_dat.response_.c_str());
+            size_t si = fd_dat.response_.size();
+            if (send(fd_dat.fd, buff_, si, 0) < 0) {
+                FD_CLR(fd, &master_);
+                close(fd);
+                std::cout << fd << " closed"<< std::endl;
+                fd_dat.status_ = ClosedFd;
+                FD_CLR(fd, &writeMaster_);
+                return;
+            }
+            FD_CLR(fd, &writeMaster_);
+            fd_dat.status_ = WithoutSession;
+            fd_dat.responseCode_ = 200;
+            if (fd_dat.requestHeadMap_["Connection:"] == "close") {
+                FD_CLR(fd, &master_);
+                close(fd);
+                fd_dat.status_ = ClosedFd;
+                return;
+            }
+            return;
+        }
+        if (fd_dat.autoIndex_ != "") {
+            fd_dat.status_ = SendBody;
+            fd_dat.response_ += "200 OK\r\nContent-Length: ";
+            fd_dat.response_ += intToString(fd_dat.autoIndex_.size());
+            fd_dat.response_ += "\r\n\r\n";
+            fd_dat.response_+= fd_dat.autoIndex_;
+            fd_dat.response_ += "\r\n\r\n";
+            fd_dat.autoIndex_ = "";
+            size_t si = fd_dat.response_.size();
+            char b_temp[si];
+            bzero(b_temp, si);
+            strcpy(b_temp, fd_dat.response_.c_str());
+            if (send(fd, b_temp, si, 0) < 0) {
+                FD_CLR(fd, &master_);
+                close(fd);
+                fd_dat.status_ = ClosedFd;
+                FD_CLR(fd, &writeMaster_);
+                return;
+            }
+            FD_CLR(fd, &writeMaster_);
+            if (fd_dat.requestHeadMap_["Connection:"] == "close") {
+                    FD_CLR(fd, &master_);
+                    close(fd);
+                    fd_dat.status_ = ClosedFd;
+                    return;
+            }
+            return;
+        }
+        fd_dat.iff_.open(fd_dat.filename_, std::ios::in | std::ios::binary);
+        if (fd_dat.iff_.is_open()) {
+            fd_dat.response_ += "200 OK\r\nContent-Length: ";
+            fd_dat.iff_.seekg(0, fd_dat.iff_.end);
+            fd_dat.bodyLength_ = fd_dat.iff_.tellg();
+            fd_dat.iff_.seekg(0, fd_dat.iff_.beg);
+            fd_dat.response_ += intToString(fd_dat.bodyLength_);
+            fd_dat.response_ += "\r\n\r\n";
+            bzero(buff_, BUFFER);
+            strcpy(buff_, fd_dat.response_.c_str());
+            size_t si = fd_dat.response_.size();
+            if (send(fd, buff_, si, 0) < 0) {
+                FD_CLR(fd, &master_);
+                close(fd);
+                fd_dat.status_ = ClosedFd;
+                FD_CLR(fd, &writeMaster_);
+                return;
+            }
+            fd_dat.status_ = SendBody;
+        }
+            else
+                fd_dat.responseCode_ = 404;
+    }
+    if (fd_dat.responseCode_ >= 400) {
+        std::stringstream k;
+        k << fd_dat.responseCode_;
+        std::string key;
+        k >> key;
+        fd_dat.response_ = fd_dat.http11_ + " " + key + " " + validConfig_.errorsMap[key] + "\nContent-Length: ";
+        if (fd_dat.location_ != 0) {
+            if (fd_dat.location_->getErrorPages()[fd_dat.responseCode_] == "") {
+                fd_dat._error_page = makeErrorPage(fd_dat.responseCode_);
+                fd_dat.bodyLength_ = fd_dat._error_page.size();
 
-                        fd_dat._status = Sendbody;
-                        fd_dat._resp += "200 OK\r\nContent-Length: ";
-                        fd_dat._resp += int_to_string(fd_dat._autoIndex.size());
-                        fd_dat._resp += "\r\n\r\n";
-                        fd_dat._resp+= fd_dat._autoIndex;
-                        fd_dat._resp += "\r\n\r\n";
-                        fd_dat._autoIndex = ""; 
-                        size_t si = fd_dat._resp.size();
-                        char b_temp[si];
-                        bzero(b_temp, si);
-                        strcpy(b_temp, fd_dat._resp.c_str());
-                        if (send(fd, b_temp, si, 0) < 0)
-                        {
-                                FD_CLR(fd, &_master);
-                                close(fd);
-//                                cout << fd << " closed"<< endl;
-                                fd_dat._status = Closefd;
-                                FD_CLR(fd, &writeMaster);
-                                return;
-                        }
-                        FD_CLR(fd, &writeMaster);
-                        if (fd_dat._request_head_map["Connection:"] == "close")
-                        {
-                                FD_CLR(fd, &_master);
-                                close(fd);
-//                                cout << fd << " closed"<< endl;
-                                fd_dat._status = Closefd;
-                                return;
-                        }
-                        return;
+                fd_dat.response_ += intToString(fd_dat._error_page.size());
+                fd_dat.response_ += "\r\n\r\n";
+                bzero(buff_, BUFFER);
+                strcpy(buff_, fd_dat.response_.c_str());
+                size_t si = fd_dat.response_.size();
+                if (send(fd, buff_, si, 0) < 0) {
+                    FD_CLR(fd, &master_);
+                    close(fd);
+                    fd_dat.status_ = ClosedFd;
+                    FD_CLR(fd, &writeMaster_);
+                    return;
                 }
-			fd_dat._iff.open(fd_dat._filename, std::ios::in | std::ios::binary);
-                if (fd_dat._iff.is_open())
-                {
-                        fd_dat._resp += "200 OK\r\nContent-Length: ";
-                        fd_dat._iff.seekg(0, fd_dat._iff.end);
-                        fd_dat._len_body = fd_dat._iff.tellg();
-                        fd_dat._iff.seekg(0, fd_dat._iff.beg);
-                        fd_dat._resp += int_to_string(fd_dat._len_body);
-                        fd_dat._resp += "\r\n\r\n";
-                        bzero(_buff, BUFFER);  
-                        strcpy(_buff, fd_dat._resp.c_str());
-                        size_t si = fd_dat._resp.size();
-                        if (send(fd, _buff, si, 0) < 0)
-                        {
-                                FD_CLR(fd, &_master);
-                                close(fd);
-//                                cout << fd << " closed"<< endl;
-                                fd_dat._status = Closefd;
-                                FD_CLR(fd, &writeMaster);
-                                return;
-                        }
-                        fd_dat._status = Sendbody;
+
+                fd_dat.status_ = SendBody;
+                return;
+            }
+            else {
+                fd_dat.filename_ = "./www/" + fd_dat.server_->getRoot() +
+                fd_dat.location_->getErrorPages()[fd_dat.responseCode_];
+
+                fd_dat.iff_.open(fd_dat.filename_, std::ios::in | std::ios::binary);
+                if (fd_dat.iff_.is_open()) {
+                    fd_dat.iff_.seekg(0, fd_dat.iff_.end);
+                    fd_dat.bodyLength_ = fd_dat.iff_.tellg();
+                    fd_dat.iff_.seekg(0, fd_dat.iff_.beg);
+
+                    fd_dat.response_ += intToString(fd_dat.bodyLength_);
+                    fd_dat.response_ += "\r\n\r\n";
+                    bzero(buff_, BUFFER);
+                    strcpy(buff_, fd_dat.response_.c_str());
+                    size_t si = fd_dat.response_.size();
+
+                    if (send(fd, buff_, si, 0) < 0) {
+                        FD_CLR(fd, &master_);
+                        close(fd);
+                        std::cout << fd << " closed 672"<< std::endl;
+                        fd_dat.status_ = ClosedFd;
+                        FD_CLR(fd, &writeMaster_);
+                        return;
+                    }
+
+                    fd_dat.status_ = SendBody;
+                    fd_dat.responseCode_ = 200;
+                    return;
+                }
+                else {
+                    fd_dat.responseCode_ = 500;
+                    return;
+                }
+            }
+        }
+        else {
+            if (fd_dat.server_->getErrorPages()[fd_dat.responseCode_] == "") {
+                fd_dat._error_page = makeErrorPage(fd_dat.responseCode_);
+                fd_dat.bodyLength_ = fd_dat._error_page.size();
+                fd_dat.response_ += intToString(fd_dat.bodyLength_);
+                fd_dat.response_ += "\r\n\r\n";
+                bzero(buff_, BUFFER);
+                strcpy(buff_, fd_dat.response_.c_str());
+                size_t si = fd_dat.response_.size();
+                if (send(fd, buff_, si, 0) < 0) {
+                    FD_CLR(fd, &master_);
+                    close(fd);
+                    fd_dat.status_ = ClosedFd;
+                    FD_CLR(fd, &writeMaster_);
+                    return;
+                }
+                fd_dat.status_ = SendBody;
+                return;
+            }
+            else {
+                fd_dat.filename_ = "./www/" + fd_dat.server_->getRoot() + fd_dat.server_->getErrorPages()[fd_dat.responseCode_];
+                fd_dat.iff_.open(fd_dat.filename_, std::ios::in | std::ios::binary);
+                if (fd_dat.iff_.is_open()) {
+                    fd_dat.iff_.seekg(0, fd_dat.iff_.end);
+                    fd_dat.bodyLength_ = fd_dat.iff_.tellg();
+                    fd_dat.iff_.seekg(0, fd_dat.iff_.beg);
+                    fd_dat.response_ += intToString(fd_dat.bodyLength_);
+                    fd_dat.response_ += "\r\n\r\n";
+                    bzero(buff_, BUFFER);
+                    strcpy(buff_, fd_dat.response_.c_str());
+                    size_t si = fd_dat.response_.size();
+
+                    if (send(fd, buff_, si, 0) < 0) {
+                        FD_CLR(fd, &master_);
+                        close(fd);
+                        fd_dat.status_ = ClosedFd;
+                        FD_CLR(fd, &writeMaster_);
+                        return;
+                    }
+                    fd_dat.status_ = SendBody;
+                    fd_dat.responseCode_ = 299;
+                    return;
                 }
                 else
-                {
-                        fd_dat._code_resp = 404;
-//                        cout << "not in!!!!!!" << endl;
-                }
+                    fd_dat.responseCode_ = 500;
+            }
         }
-        if (fd_dat._code_resp    >= 400)                        /***    Errors          ***/
-        {
-                std::stringstream k;
-                k << fd_dat._code_resp;
-                std::string key;
-                k >> key;
-                fd_dat._resp = fd_dat._http11 + " " + key + " " + _valid_conf.errorsMap[key] + "\nContent-Length: ";
-                if (fd_dat._location != 0)
-                {
-                                if (fd_dat._location->getErrorPages()[fd_dat._code_resp] == "")
-                                {
-                                        fd_dat._error_page = makeErrorPage(fd_dat._code_resp);
-                                        fd_dat._len_body = fd_dat._error_page.size();
-                                       
-                                        fd_dat._resp += int_to_string(fd_dat._error_page.size());
-                                        fd_dat._resp += "\r\n\r\n";
-                                        bzero(_buff, BUFFER);  
-                                        strcpy(_buff, fd_dat._resp.c_str());
-                                        size_t si = fd_dat._resp.size();
-                                        if (send(fd, _buff, si, 0) < 0)
-                                        {
-                                                FD_CLR(fd, &_master);
-                                                close(fd);
-//                                                std::cout << fd << " closed"<< endl;
-                                                fd_dat._status = Closefd;
-                                                FD_CLR(fd, &writeMaster);
-                                                return;
-                                        }
-                                     
-                                        fd_dat._status = Sendbody;
-                                        return;
-                                }
-                                else                                /***        call error-html-gen     ***/
-                                {
-                                        fd_dat._filename = "./www/" + fd_dat._server->getRoot() +
-                                        fd_dat._location->getErrorPages()[fd_dat._code_resp];
-                                       
-                                        fd_dat._iff.open(fd_dat._filename, std::ios::in | std::ios::binary);
-                                        if (fd_dat._iff.is_open())
-                                        {
-                                                fd_dat._iff.seekg(0, fd_dat._iff.end);
-                                                fd_dat._len_body = fd_dat._iff.tellg();
-                                                fd_dat._iff.seekg(0, fd_dat._iff.beg);
-                                                
-                                                fd_dat._resp += int_to_string(fd_dat._len_body);
-                                                fd_dat._resp += "\r\n\r\n";
-                                                bzero(_buff, BUFFER);  
-                                                strcpy(_buff, fd_dat._resp.c_str());
-                                                size_t si = fd_dat._resp.size();
-                                        
-                                                if (send(fd, _buff, si, 0) < 0)
-                                                {
-                                                        FD_CLR(fd, &_master);
-                                                        close(fd);
-                                                        std::cout << fd << " closed 672"<< std::endl;
-                                                        fd_dat._status = Closefd;
-                                                        FD_CLR(fd, &writeMaster);
-                                                        return;
-                                                }
-                                        
-                                                fd_dat._status = Sendbody;
-                                                fd_dat._code_resp = 200;
-                                                return;
-                                        }
-                                        else
-                                        {
-                                                fd_dat._code_resp = 500;
-                                                return;
-                                        }
-                                }
-                }
-                else
-                {
-                        if (fd_dat._server->getErrorPages()[fd_dat._code_resp] == "")
-                                {
-                                        fd_dat._error_page = makeErrorPage(fd_dat._code_resp);
-                                        fd_dat._len_body = fd_dat._error_page.size();
-                                        fd_dat._resp += int_to_string(fd_dat._len_body);
-                                        fd_dat._resp += "\r\n\r\n";
-                                        bzero(_buff, BUFFER);  
-                                        strcpy(_buff, fd_dat._resp.c_str());
-                                        size_t si = fd_dat._resp.size();
-                                        if (send(fd, _buff, si, 0) < 0)
-                                        {
-                                                FD_CLR(fd, &_master);
-                                                close(fd);
-//                                                cout << fd << " closed"<< endl;
-                                                fd_dat._status = Closefd;
-                                                FD_CLR(fd, &writeMaster);
-                                                return;
-                                        }
-                                        fd_dat._status = Sendbody;
-                                        return;
-                                }
-                                else
-                                {
-                                        fd_dat._filename = "./www/" + fd_dat._server->getRoot() +
-                                        fd_dat._server->getErrorPages()[fd_dat._code_resp];
-                                        fd_dat._iff.open(fd_dat._filename, std::ios::in | std::ios::binary);
-                                        if (fd_dat._iff.is_open())
-                                        {
-                                                fd_dat._iff.seekg(0, fd_dat._iff.end);
-                                                fd_dat._len_body = fd_dat._iff.tellg();
-                                                fd_dat._iff.seekg(0, fd_dat._iff.beg);
-                                                fd_dat._resp += int_to_string(fd_dat._len_body);
-                                                fd_dat._resp += "\r\n\r\n";
-                                                bzero(_buff, BUFFER);  
-                                                strcpy(_buff, fd_dat._resp.c_str());
-                                                size_t si = fd_dat._resp.size();
-                                        
-                                                if (send(fd, _buff, si, 0) < 0)
-                                                {
-                                                        FD_CLR(fd, &_master);
-                                                        close(fd);
-//                                                        cout << fd << " closed"<< endl;
-                                                        fd_dat._status = Closefd;
-                                                        FD_CLR(fd, &writeMaster);
-                                                        return;
-                                                }
-                                                fd_dat._status = Sendbody;
-                                                fd_dat._code_resp = 299;
-                                                return;
-                                        }
-                                        else
-                                        {
-                                                fd_dat._code_resp = 500;
-                                        }
-                                }
-                }
-        }
-
+    }
 }
 
-void ft::Responder::send_resp_body(int fd)
+void ft::Responder::sendResponseBody(int fd)
 {
-        fd_data& fd_dat = _fd_host_map[fd];
-        if (fd_dat._code_resp < 400)                            /***            Errors          ***/
-        {
-                if (fd_dat._len_body >= BUFFER)
-                {
-                        bzero(_buff, BUFFER);
-                        fd_dat._len_body -= BUFFER;
-                        fd_dat._iff.read(_buff, BUFFER);
-						if(fd_dat._iff.bad() || fd_dat._iff.fail())
-						{
-							fd_dat._code_resp = 500;
-							fd_dat._iff.close();
-							fd_dat._status = Sendbody;
-							return;
-						}
-                        if (send(fd, _buff, BUFFER, 0) < 0)
-                        {
-                                FD_CLR(fd, &_master);
-                                close(fd);
-//                                cout << fd << " closed"<< endl;
-                                fd_dat._status = Closefd;
-                                FD_CLR(fd, &writeMaster);
-                                return;
-                        }
-                }
-                else
-                {
-                        std::cout << "^^^^^^sended_resp_body ^^^^^^" << std::endl;
-                        bzero(_buff, BUFFER);
-                        fd_dat._iff.read(_buff, fd_dat._len_body);
-						if(fd_dat._iff.bad() || fd_dat._iff.fail())
-						{
-							fd_dat._code_resp = 500;
-							fd_dat._iff.close();
-							fd_dat._status = Sendbody;
-							return;
-						}
-                        if (send(fd, _buff, fd_dat._len_body, 0) < 0)
-                        {
-                                FD_CLR(fd, &_master);
-                                close(fd);
-//                                cout << fd << " closed"<< endl;
-                                fd_dat._status = Closefd;
-                                FD_CLR(fd, &writeMaster);
-                                return;
-                        }
-                        fd_dat._iff.close();     
-                        FD_CLR(fd, &writeMaster);
-                        fd_dat._status = Nosession;
-                        fd_dat._len_body = 0;
-                        fd_dat._code_resp = 200;
-                        if (fd_dat._request_head_map["Connection:"] == "close")
-                        {
-                                FD_CLR(fd, &_master);
-                                close(fd);
-//                                cout << fd << " closed"<< endl;
-                                fd_dat._status = Closefd;
-                                return;
-                        }
-                }
+    fd_data& fd_dat = fdHostMap_[fd];
+    if (fd_dat.responseCode_ < 400) {
+        if (fd_dat.bodyLength_ >= BUFFER) {
+            bzero(buff_, BUFFER);
+            fd_dat.bodyLength_ -= BUFFER;
+            fd_dat.iff_.read(buff_, BUFFER);
+            if(fd_dat.iff_.bad() || fd_dat.iff_.fail()) {
+                fd_dat.responseCode_ = 500;
+                fd_dat.iff_.close();
+                fd_dat.status_ = SendBody;
+                return;
+            }
+            if (send(fd, buff_, BUFFER, 0) < 0) {
+                FD_CLR(fd, &master_);
+                close(fd);
+                fd_dat.status_ = ClosedFd;
+                FD_CLR(fd, &writeMaster_);
+                return;
+            }
         }
-        else    /*** Error pages ***/
-        {
-                std::cout << "^^^^^^sended_error_body ^^^^^^" << std::endl;
-                bzero(_buff, BUFFER);
-                strcpy(_buff, fd_dat._error_page.c_str());
-                if (send(fd, _buff, fd_dat._len_body, 0) < 0 || fd_dat._request_type == "POST")
-                {
-                        FD_CLR(fd, &_master);
-                        close(fd);
-//                        cout << fd << " closed 832"<< endl;
-                        fd_dat._status = Closefd;
-                        FD_CLR(fd, &writeMaster);
-                        return;
-                }
-                fd_dat._error_page = "";    
-                FD_CLR(fd, &writeMaster);
-                fd_dat._status = Nosession;
-                fd_dat._len_body = 0;
-                fd_dat._code_resp = 200;
-                if (fd_dat._request_head_map["Connection:"] == "close")
-                {
-                        FD_CLR(fd, &_master);
-                        close(fd);
-//                        cout << fd << " closed"<< endl;
-                        fd_dat._status = Closefd;
-                        return;
-                }
+        else {
+            std::cout << "^^^^^^sended_resp_body ^^^^^^" << std::endl;
+            bzero(buff_, BUFFER);
+            fd_dat.iff_.read(buff_, fd_dat.bodyLength_);
+            if (fd_dat.iff_.bad() || fd_dat.iff_.fail()) {
+                fd_dat.responseCode_ = 500;
+                fd_dat.iff_.close();
+                fd_dat.status_ = SendBody;
+                return;
+            }
+            if (send(fd, buff_, fd_dat.bodyLength_, 0) < 0) {
+                FD_CLR(fd, &master_);
+                close(fd);
+                fd_dat.status_ = ClosedFd;
+                FD_CLR(fd, &writeMaster_);
+                return;
+            }
+            fd_dat.iff_.close();
+            FD_CLR(fd, &writeMaster_);
+            fd_dat.status_ = WithoutSession;
+            fd_dat.bodyLength_ = 0;
+            fd_dat.responseCode_ = 200;
+            if (fd_dat.requestHeadMap_["Connection:"] == "close") {
+                FD_CLR(fd, &master_);
+                close(fd);
+                fd_dat.status_ = ClosedFd;
+                return;
+            }
         }
+    }
+    else
+    {
+        std::cout << "^^^^^^sended_error_body ^^^^^^" << std::endl;
+        bzero(buff_, BUFFER);
+        strcpy(buff_, fd_dat._error_page.c_str());
+        if (send(fd, buff_, fd_dat.bodyLength_, 0) < 0 || fd_dat.requestType_ == "POST") {
+            FD_CLR(fd, &master_);
+            close(fd);
+            fd_dat.status_ = ClosedFd;
+            FD_CLR(fd, &writeMaster_);
+            return;
+        }
+        fd_dat._error_page = "";
+        FD_CLR(fd, &writeMaster_);
+        fd_dat.status_ = WithoutSession;
+        fd_dat.bodyLength_ = 0;
+        fd_dat.responseCode_ = 200;
+        if (fd_dat.requestHeadMap_["Connection:"] == "close") {
+            FD_CLR(fd, &master_);
+            close(fd);
+            fd_dat.status_ = ClosedFd;
+            return;
+        }
+    }
 }
 
-fd_set & ft::Responder::getMaster()
+void ft::Responder::readPostBody(int fd)
 {
-        return _master;
+    fd_data& fd_dat = fdHostMap_[fd];
+
+    if (!fd_dat._is_chunked) {
+        bzero(buff_, BUFFER);
+        int temp = BUFFER;
+
+        if (fd_dat.status_ == ReadBody && fd_dat.bodyLength_ < BUFFER)
+            temp = fd_dat.bodyLength_;
+
+        int recvResult = recv(fd, &buff_, temp, 0);
+        fd_dat._wasreaded = recvResult;
+
+        if (recvResult <= 0) {
+            FD_CLR(fd, &master_);
+            close(fd);
+            fd_dat.status_ = ClosedFd;
+            return;
+        }
+        fd_dat._outdata.write(buff_, fd_dat._wasreaded);
+        if (fd_dat._outdata.bad() || fd_dat._outdata.fail()) {
+            fd_dat.responseCode_ = 500;
+            fd_dat._outdata.close();
+            return;
+        }
+        fd_dat.bodyLength_ -= fd_dat._wasreaded;
+
+        if (fd_dat.bodyLength_ == 0) {
+            FD_SET(fd, &writeMaster_);
+            fd_dat._outdata.close();
+            if (fd_dat.location_ != 0 && fd_dat.location_->getIsCgi()) {
+                fd_dat.response_ = "HTTP/1.1 ";
+                fd_dat.status_ = Cgi;
+                return;
+            }
+            fd_dat.status_ = Send;
+            fd_dat.response_ = "HTTP/1.1 200 OK\nContent-Length: 2\r\n\r\nOK";
+        }
+        else
+            fd_dat.status_ = ReadBody;
+        return ;
+    }
+
+    char hex_read[6];
+    int recvResult = recv(fd, &hex_read, 6, 0);
+    if (recvResult <= 0) {
+        FD_CLR(fd, &master_);
+        close(fd);
+        fd_dat.status_ = ClosedFd;
+        return;
+    }
+    int end_hex = 4;
+    for (int i = 0; i < recvResult; i++) {
+        if (hex_read[i] == '\r') {
+            end_hex = i;
+            break;
+        }
+    }
+    hex_read[end_hex] = '\0';
+    std::cout << hex_read << "  - it is hex\n";
+    int chunk_size = hexToInt(hex_read);
+    std::cout << chunk_size << " chunk_size\n";
+    if (chunk_size < 0 || chunk_size > 20000) {
+        fd_dat.responseCode_ = 411;
+        FD_SET(fd, &writeMaster_);
+        fd_dat.status_ = Send;
+        return;
+    }
+    char chunk_buff[chunk_size + 2];
+    bzero(&chunk_buff, chunk_size + 2);
+    fd_dat._chunk_ostatok += chunk_size;
+
+    if (chunk_size != 0)
+        recvResult = recv(fd, &chunk_buff, chunk_size + 2, 0);
+    if (recvResult < 0 || (fd_dat.server_->getMaxBodySize() && fd_dat.server_->getMaxBodySize() < fd_dat._chunk_ostatok) ||
+        (!fd_dat.server_->getMaxBodySize() && fd_dat.bodyLength_ > 100000)) {
+        fd_dat.responseCode_ = 411;
+        FD_SET(fd, &writeMaster_);
+        fd_dat.status_ = Send;
+        return;
+    }
+    fd_dat._outdata.write(&chunk_buff[0], recvResult - 2);
+    if (fd_dat._outdata.bad() || fd_dat._outdata.fail()) {
+        fd_dat.responseCode_ = 500;
+        fd_dat._outdata.close();
+        return;
+    }
+    if (chunk_size == 0) {
+        fd_dat._outdata.close();
+        FD_SET(fd, &writeMaster_);
+        if (fd_dat.location_ != 0 && fd_dat.location_->getIsCgi())
+        {
+            fd_dat.response_ = "HTTP/1.1 ";
+            fd_dat.status_ = Cgi;
+            return;
+        }
+        fd_dat.response_ = "HTTP/1.1 200 OK\nContent-Length: 2\r\n\r\nOK";
+        fd_dat.status_ = Send;
+        fd_dat.requestHeadMap_["Connection:"] = "close";
+        return;
+    }
 }
 
 fd_set & ft::Responder::getWriteMaster()
 { 
-        return writeMaster;
+    return writeMaster_;
 }
 
-bool ft::Responder::is_ready_to_send(int fd)
+bool ft::Responder::isReadyToSend(int fd)
 {
-        return (_fd_host_map[fd]._status == Send | _fd_host_map[fd]._status == Sendbody | _fd_host_map[fd]._status == Cgi);
-}
-bool ft::Responder::is_ready_to_read_body(int fd)
-{
-        return (_fd_host_map[fd]._status == Readbody);
+    return (fdHostMap_[fd].status_ == Send | fdHostMap_[fd].status_ == SendBody | fdHostMap_[fd].status_ == Cgi);
 }
 
-void ft::Responder::add_to_map(const int& fd, const u_short& port, const in_addr_t& host)
+void ft::Responder::addToMap(const int& fd, const u_short& port, const in_addr_t& host)
 {
-        _fd_host_map[fd]._ip = host;
-        _fd_host_map[fd]._port = port;
-        _fd_host_map[fd]._code_resp = 200;
+    fdHostMap_[fd].ip_ = host;
+    fdHostMap_[fd].port_ = port;
+    fdHostMap_[fd].responseCode_ = 200;
 }
 
-bool ft::Responder::is_to_del(int fd)
+bool ft::Responder::isToDelete(int fd)
 {
-        return (_fd_host_map[fd]._status == Closefd);
+    return (fdHostMap_[fd].status_ == ClosedFd);
 }
 
-void ft::Responder::del_from_map(int fd)
+void ft::Responder::deleteFromMap(int fd)
 {
-        _fd_host_map.erase(fd);
+    fdHostMap_.erase(fd);
 }
 
-void        ft::Responder::read_post_body(int fd)
-{
-        fd_data& fd_dat = _fd_host_map[fd];
-        if (!fd_dat._is_chunked)
-        {
-                bzero(_buff, BUFFER);
-                int magic  = BUFFER;
-                if (fd_dat._status == Readbody && fd_dat._len_body < BUFFER && !fd_dat._is_chunked)
-                        magic = fd_dat._len_body;
-                int res = recv(fd, &_buff, magic, 0);
-                fd_dat._wasreaded = res;
-                if (res <= 0)
-                {
-                        FD_CLR(fd, &_master);
-                        close(fd);
-//                        cout << fd << " closed"<< std::endl;
-                        fd_dat._status = Closefd;
-                        return;
-                }
-                if (fd_dat._len_body >= BUFFER)
-                {
-                        fd_dat._outdata.write(_buff, fd_dat._wasreaded);
-						if(fd_dat._outdata.bad() || fd_dat._outdata.fail())
-						{
-							fd_dat._code_resp = 500;
-							fd_dat._outdata.close();
-							return;
-						}
-                        fd_dat._len_body -= fd_dat._wasreaded;
-                }
-                else
-                {
-                        fd_dat._outdata.write(_buff, fd_dat._wasreaded);
-						if(fd_dat._outdata.bad() || fd_dat._outdata.fail())
-						{
-							fd_dat._code_resp = 500;
-							fd_dat._outdata.close();
-							return;
-						}
-                        fd_dat._len_body -= fd_dat._wasreaded;
-                }
 
-                if (fd_dat._len_body == 0)
-                {
-                         FD_SET(fd, &writeMaster);
-                        fd_dat._outdata.close();
-                        if (fd_dat._location != 0 && fd_dat._location->getIsCgi())
-                        {
-                                fd_dat._resp = "HTTP/1.1 ";
-                                fd_dat._status = Cgi;
-                                return;
-                        }
-                        fd_dat._status = Send;
-                        fd_dat._resp = "HTTP/1.1 200 OK\nContent-Length: 2\r\n\r\nOK";
-                }
-                else
-                {
-                        fd_dat._status = Readbody;
-                }
-                return ;
-        }
-        /***    Chunked         ***/
-        {
-                char hex_read[6];
-                int res = recv(fd, &hex_read, 6, 0);
-                if (res <= 0)
-                {
-                        FD_CLR(fd, &_master);
-                        close(fd);
-                        fd_dat._status = Closefd;
-                        return;
-                }
-                int end_hex = 4;
-                for (int i = 0; i < res; i++)
-                {
-                        if (hex_read[i] == '\r')
-                        {
-                                end_hex = i;
-                                break;
-                        }
-                }
-                hex_read[end_hex] = '\0';
-                std::cout << hex_read << "  - it iz are hex\n";
-                int chunk_size = hexToInt(hex_read);
-                std::cout << chunk_size << " chunk_size\n";
-                if (chunk_size < 0 || chunk_size > 20000)
-                {
-                        fd_dat._code_resp = 411;
-                        FD_SET(fd, &writeMaster);
-                        fd_dat._status = Send;
-                        return;
-                }
-                char chunk_buff[chunk_size + 2];
-                bzero(&chunk_buff, chunk_size + 2);
-                fd_dat._chunk_ostatok += chunk_size;
-                if (chunk_size != 0)
-                        res = recv(fd, &chunk_buff, chunk_size + 2, 0);
-//                std::cout << fd_dat._server->getMaxBodySize()<< " ostatok: fd_dat._chunk_ostatok) " << fd_dat._chunk_ostatok << std::endl;
-            if (res < 0 || (fd_dat._server->getMaxBodySize() && fd_dat._server->getMaxBodySize() < fd_dat._chunk_ostatok) ||
-                        (!fd_dat._server->getMaxBodySize() && fd_dat._len_body > 100000))
-                {
-                        fd_dat._code_resp = 411;
-                        FD_SET(fd, &writeMaster);
-                        fd_dat._status = Send;
-                        return;
-                }
-                fd_dat._outdata.write(&chunk_buff[0], res-2);
-				if(fd_dat._outdata.bad() || fd_dat._outdata.fail())
-				{
-					fd_dat._code_resp = 500;
-					fd_dat._outdata.close();
-					return;
-				}
-                if (chunk_size == 0)
-                {
-                        fd_dat._outdata.close();
-                        FD_SET(fd, &writeMaster);
-                        if (fd_dat._location != 0 && fd_dat._location->getIsCgi())
-                        {
-                                fd_dat._resp = "HTTP/1.1 ";
-                                fd_dat._status = Cgi;
-                                return;
-                        }
-                        fd_dat._resp = "HTTP/1.1 200 OK\nContent-Length: 2\r\n\r\nOK";
-                        fd_dat._status = Send;
-                        fd_dat._request_head_map["Connection:"] = "close";
-                        return;
-                }
-                return;
-        }
-}
 

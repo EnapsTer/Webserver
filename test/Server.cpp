@@ -1,25 +1,19 @@
-//
-// Created by Janelle Kassandra on 3/7/22.
-//
-
 #include "Server.hpp"
 
 ft::Server::Server() {
-    _port = 0;
-    _host = htonl(INADDR_ANY);
-    _serverName = "";
-    _maxBodySize = 0;
-//    _autoIndex = false;
+    serverName_ = "";
+    host_ = htonl(INADDR_ANY);
+    port_ = 0;
+    maxBodySize_ = 0;
 }
 
 ft::Server &ft::Server::operator=(const Server &other) {
     ALocation::operator=(other);
-    _port = other._port;
-    _host = other._host;
-    _serverName = other._serverName;
-    _maxBodySize = other._maxBodySize;
-//    _autoIndex = other._autoIndex;
-    _locations.insert(_locations.end(), other._locations.begin(), other._locations.end());
+    serverName_ = other.serverName_;
+    host_ = other.host_;
+    port_ = other.port_;
+    maxBodySize_ = other.maxBodySize_;
+    locations_.insert(locations_.end(), other.locations_.begin(), other.locations_.end());
     return *this;
 }
 
@@ -28,45 +22,37 @@ ft::Server::~Server() {
 }
 
 void ft::Server::setPort(const int &port) {
-    _port = htons(port);
+    port_ = htons(port);
 }
 
 const u_short &ft::Server::getPort() const {
-    return _port;
+    return port_;
 }
 
 void ft::Server::setHost(const std::string &host) {
-    _host = inet_addr(host.c_str());
+    host_ = inet_addr(host.c_str());
 }
 
 const in_addr_t &ft::Server::getHost() const {
-    return _host;
+    return host_;
 }
 
 void ft::Server::setServerName(const std::string &serverName) {
-    _serverName = serverName;
+    serverName_ = serverName;
 }
 
 const std::string &ft::Server::getServerName() const {
-    return _serverName;
+    return serverName_;
 }
 
 void ft::Server::setMaxBodySize(const int &maxBodySize) {
-    _maxBodySize = maxBodySize;
+    maxBodySize_ = maxBodySize;
 }
 
 const int &ft::Server::getMaxBodySize() const {
-    return _maxBodySize;
+    return maxBodySize_;
 }
 
-//void ft::Server::setAutoIndex(const bool &autoIndex) {
-//    _autoIndex = autoIndex;
-//}
-//
-//const bool &ft::Server::getAutoIndex() const {
-//    return _autoIndex;
-//}
-
 std::vector<ft::Location> &ft::Server::getLocations() {
-    return _locations;
+    return locations_;
 }

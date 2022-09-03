@@ -12,14 +12,13 @@
 
 int main()
 {
-    int sock = 0; long valread;
+    int sock = 0;
+    long valread;
     struct sockaddr_in serv_addr;
-//    char *hello = "Hello from client";
     char buffer[1024] = {0};
 
     std::string hello = "POST /upload HTTP/1.1\r\n";
     hello += "Host: localhost:8080\r\n";
-//                        "User-Agent: curl/7.54.0\n";
     hello += "Accept: */*\r\n";
     hello += "name: CHHHUUUUUCK\r\n";
     hello += "Transfer-Encoding: chunked\r\n";

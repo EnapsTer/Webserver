@@ -1,10 +1,5 @@
-
-//
-// Created by Janelle Kassandra on 3/7/22.
-//
-
-#ifndef VOVA_WEBSERV_HPP
-#define VOVA_WEBSERV_HPP
+#ifndef WEBSERV_HPP
+#define WEBSERV_HPP
 
 #include <vector>
 #include <list>
@@ -29,29 +24,24 @@ namespace ft {
 
     private:
 
-        std::vector<struct Listener> _listenSockets;
-        std::list<int> _clientSockets;
-        int _num;
-        Responder _responder;
+        std::vector<struct Listener> listenSockets_;
+        std::list<int> clientSockets_;
+        int socketNumber_;
+        Responder responder_;
 
         WebServ();
 
-        void _initListenSocket(const int &i);
-
-        void _createListenSockets();
-
-        void _createClientSocket(const Listener &fd);
+        void initializeListenSocket_(const int &i);
+        void createClientSocket_(const Listener &socket);
+        void createListenSockets_();
 
     public:
+        void run();
 
         WebServ(const char *config);
-
         virtual ~WebServ();
-
-
-        void run();
     };
 
 }
 
-#endif //VOVA_WEBSERV_HPP
+#endif

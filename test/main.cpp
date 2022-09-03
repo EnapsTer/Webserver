@@ -1,10 +1,9 @@
 #include <iostream>
-//#include <netinet/in.h>
 #include "WebServ.hpp"
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
-        std::cout << "Error: set configuration file" << std::endl;
+        std::cout << "Error: need one argument with path to configuration file." << std::endl;
         return 0;
     }
 
