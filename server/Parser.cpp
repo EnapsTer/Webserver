@@ -525,7 +525,7 @@ void ft::Parser::cleanWhitespaces(std::string *line) {
 }
 
 int ft::Parser::isEmptyLine(std::string str) {
-    for (int i = 0; i < str.size(); ++i)
+    for (unsigned int i = 0; i < str.size(); ++i)
         if (str[i] != ' ' && str[i] != '\t' && str[i] != '\n')
             return 1;
     return 0;
@@ -534,7 +534,7 @@ int ft::Parser::isEmptyLine(std::string str) {
 std::vector<std::string>  ft::Parser::lineBreaks(std::string line) {
 	std::vector<std::string> vec;
 
-    for (int i = 0; i < line.size(); ++i) {
+    for (unsigned int i = 0; i < line.size(); ++i) {
         if (line[i] != '}' && line[i] != '{')
             continue;
         std::string newString;

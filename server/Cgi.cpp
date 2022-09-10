@@ -125,8 +125,6 @@ void        ft::Responder::cgiHandler(int fd) {
             fd_dat._inName = rootPath + "/inCgi" + intToString(fd_dat.fd);
         }
 
-        /***    child process   ***/
-
         fd_dat._pid = fork();
 
         if (fd_dat._pid < 0) {
@@ -168,8 +166,6 @@ void        ft::Responder::cgiHandler(int fd) {
                 exit(EXIT_FAILURE);
             }
         }
-
-        /***    parent process  ***/
 
         free(cmd[0]);
         free(cmd[1]);
